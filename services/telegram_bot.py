@@ -33,12 +33,39 @@ class TelegramBotService:
     
     def _escape_markdown_v2(self, text: str) -> str:
         """Escape special characters for Telegram's MarkdownV2 format."""
-        # Characters that need escaping in MarkdownV2
-        special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+        if not text:
+            return ""
+
+        # First, escape the backslash itself
+        text = text.replace('\\', '\\\\')
+        
+        # Characters that need escaping in MarkdownV2, in order of precedence
+        special_chars = [
+            # First escape characters that might be part of markdown syntax
+            '_', '*', '[', ']', '(', ')', '~', '`', '>', '#',
+            # Then escape general punctuation
+            '+', '-', '=', '|', '{', '}', '.', '!',
+        ]
         
         # Escape each special character with a backslash
         for char in special_chars:
             text = text.replace(char, f'\\{char}')
+        
+        # Handle newlines - replace \n with actual newline
+        text = text.replace('\\n', '\n')
+        
+        # Handle common markdown patterns to ensure they work
+        # This prevents double-escaping of already properly formatted markdown
+        markdown_patterns = [
+            (r'\\\*(.*?)\\\*', r'*\1*'),  # Bold
+            (r'\\_(.*?)\\_', r'_\1_'),    # Italic
+            (r'\\\`(.*?)\\\`', r'`\1`'),  # Code
+            (r'\\\[(.*?)\\\]\\\((.*?)\\\)', r'[\1](\2)')  # Links
+        ]
+        
+        for pattern, replacement in markdown_patterns:
+            import re
+            text = re.sub(pattern, replacement, text)
         
         return text
     
@@ -214,22 +241,36 @@ class TelegramBotService:
                     result = await agent.ainvoke(state)
                     if result and isinstance(result, dict) and result.get("response"):
                         logger.info("Sending response to user...")
-                        response_text = self._escape_markdown_v2(result["response"])
-                        for attempt in range(3):  # Try up to 3 times
-                            try:
-                                await update.message.reply_text(
-                                    response_text,
-                                    parse_mode=ParseMode.MARKDOWN_V2
-                                )
-                                logger.debug(f"Response sent: {response_text[:100]}{'...' if len(response_text) > 100 else ''}")
-                                break
-                            except Exception as reply_error:
-                                if attempt == 2:  # Last attempt
-                                    logger.error(f"Failed to send response after 3 attempts: {str(reply_error)}", exc_info=True)
-                                    raise
-                                else:
-                                    logger.warning(f"Failed to send response (attempt {attempt + 1}), retrying...")
-                                    await asyncio.sleep(1)  # Wait before retry
+                        try:
+                            response_text = self._escape_markdown_v2(result["response"])
+                            logger.debug(f"Original response: {result['response'][:100]}{'...' if len(result['response']) > 100 else ''}")
+                            logger.debug(f"Escaped response: {response_text[:100]}{'...' if len(response_text) > 100 else ''}")
+                            
+                            for attempt in range(3):  # Try up to 3 times
+                                try:
+                                    await update.message.reply_text(
+                                        response_text,
+                                        parse_mode=ParseMode.MARKDOWN_V2
+                                    )
+                                    logger.debug(f"Response sent successfully on attempt {attempt + 1}")
+                                    break
+                                except Exception as reply_error:
+                                    if attempt == 2:  # Last attempt
+                                        logger.error(
+                                            f"Failed to send response after 3 attempts. Error: {str(reply_error)}\n"
+                                            f"Response text: {response_text[:500]}{'...' if len(response_text) > 500 else ''}"
+                                        )
+                                        raise
+                                    else:
+                                        logger.warning(f"Failed to send response (attempt {attempt + 1}). Error: {str(reply_error)}")
+                                        await asyncio.sleep(1)  # Wait before retry
+                        except Exception as format_error:
+                            logger.error(f"Error formatting response: {str(format_error)}", exc_info=True)
+                            # Try to send without formatting as a fallback
+                            await update.message.reply_text(
+                                "I encountered an error with message formatting. Here's the unformatted response:\n\n" + 
+                                result["response"]
+                            )
                     else:
                         logger.warning("Agent workflow completed but no response generated")
                 except Exception as e:
