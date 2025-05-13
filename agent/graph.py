@@ -70,44 +70,37 @@ async def retrieve_context(state: Union[Dict[str, Any], AgentState]) -> Dict[str
             state_obj.context = chat_history
             logger.info(f"Retrieved {len(chat_history)} messages for summarization")
         else:
-            # For regular queries, get similar messages with lower threshold and higher limit
-            logger.info("Regular query detected - retrieving similar messages")
+            # For regular queries, use combined search approach
+            logger.info("Regular query detected - performing combined search")
             try:
+                # Generate embedding for the query
                 embedding = await openai_service.get_embedding(query_text)
-                similar_messages = await db_service.get_similar_messages(
-                    embedding=embedding,
+                
+                # Extract key terms from the query
+                # Common words that might indicate document content
+                doc_indicators = ["document", "pdf", "file", "gtm", "strategy", "plan", "report"]
+                has_doc_reference = any(term in query_text for term in doc_indicators)
+                
+                # Perform the combined search
+                messages = await db_service.search_messages_with_content(
                     chat_id=state_obj.chat_id,
-                    threshold=0.5,  # Lower threshold for better recall
-                    limit=10  # Increased limit to get more potential matches
+                    query_embedding=embedding,
+                    text_search=query_text if has_doc_reference else None,  # Only use text search if likely looking for document content
+                    threshold=0.5,
+                    limit=10
                 )
-                logger.info(f"Found {len(similar_messages)} similar messages")
+                
+                logger.info(f"Found {len(messages)} relevant messages")
+                for msg in messages:
+                    logger.debug(f"Message similarity: {msg.get('similarity', 0)}")
+                    if msg.get("file_content"):
+                        logger.debug("Message contains file content")
+                
+                state_obj.context = messages
+                
             except Exception as e:
-                logger.error(f"Error getting similar messages: {str(e)}", exc_info=True)
-                similar_messages = []
-            
-            # Get the full message details for each similar message
-            full_messages = []
-            for msg in similar_messages:
-                try:
-                    # Get the full message from the messages table
-                    result = db_service.client.table("inna_messages")\
-                        .select("*")\
-                        .eq("id", msg["id"])\
-                        .execute()
-                    
-                    if result.data:
-                        full_msg = result.data[0]
-                        # If there's file content, add it to the text field for context
-                        if full_msg.get("file_content"):
-                            logger.debug(f"Found file content for message {msg['id']}")
-                            full_msg["text"] = f"{full_msg.get('text', '')}\n\nFile Content:\n{full_msg['file_content']}"
-                        full_messages.append(full_msg)
-                except Exception as e:
-                    logger.error(f"Error getting full message {msg['id']}: {str(e)}", exc_info=True)
-                    continue
-            
-            state_obj.context = full_messages
-            logger.info(f"Retrieved {len(full_messages)} full messages with content")
+                logger.error(f"Error in search process: {str(e)}", exc_info=True)
+                state_obj.context = []
             
         return state_obj.to_dict()
     except Exception as e:
@@ -126,19 +119,46 @@ async def create_plan(state: Union[Dict[str, Any], AgentState]) -> Dict[str, Any
             for keyword in ["summarize", "summary", "summarise", "summarisation", "summarization"]
         )
         
-        # Format context with clear separation between messages and file content
-        context_items = []
-        for msg in state_obj.context:
-            if msg.get("text"):
-                # Split text to separate message text from file content
-                text_parts = msg["text"].split("\n\nFile Content:\n")
-                if len(text_parts) > 1:
-                    context_items.append(f"Message: {text_parts[0]}")
-                    context_items.append(f"Attached Document Content: {text_parts[1]}")
-                else:
-                    context_items.append(f"Message: {text_parts[0]}")
+        # Organize context by type
+        regular_messages = []
+        document_content = []
         
-        context_text = "\n\n".join(context_items)
+        for msg in state_obj.context:
+            if msg.get("file_content"):
+                document_content.append({
+                    "content": msg["file_content"],
+                    "similarity": msg.get("similarity", 0),
+                    "created_at": msg.get("created_at")
+                })
+            if msg.get("text"):
+                regular_messages.append({
+                    "text": msg["text"],
+                    "similarity": msg.get("similarity", 0),
+                    "created_at": msg.get("created_at")
+                })
+        
+        # Sort by similarity
+        document_content.sort(key=lambda x: x["similarity"], reverse=True)
+        regular_messages.sort(key=lambda x: x["similarity"], reverse=True)
+        
+        # Format context text
+        context_sections = []
+        
+        if document_content:
+            doc_text = "\n\n".join([
+                f"Document Content (Similarity: {doc['similarity']:.2f}):\n{doc['content']}"
+                for doc in document_content
+            ])
+            context_sections.append("### Document Content ###\n" + doc_text)
+        
+        if regular_messages:
+            msg_text = "\n\n".join([
+                f"Message (Similarity: {msg['similarity']:.2f}):\n{msg['text']}"
+                for msg in regular_messages
+            ])
+            context_sections.append("### Chat Messages ###\n" + msg_text)
+        
+        context_text = "\n\n" + "\n\n".join(context_sections)
         
         if is_summary_request:
             messages = [
@@ -152,10 +172,17 @@ async def create_plan(state: Union[Dict[str, Any], AgentState]) -> Dict[str, Any
         else:
             messages = [
                 openai_service.create_system_message(
-                    "You are a planning agent. Create a brief plan for how to respond to the user's message using the available context. Pay special attention to any document content in the context."
+                    "You are a planning agent. Create a brief plan for how to respond to the user's message. "
+                    "Pay special attention to document content and its relevance to the query. "
+                    "Consider the similarity scores when deciding which information to use."
                 ),
                 openai_service.create_user_message(
-                    f"Context:\n{context_text}\n\nUser message: {state_obj.current_message.get('text', '')}\n\nCreate a plan:"
+                    f"Context:\n{context_text}\n\n"
+                    f"User message: {state_obj.current_message.get('text', '')}\n\n"
+                    "Create a plan that specifies:\n"
+                    "1. Which pieces of information to use (considering similarity scores)\n"
+                    "2. How to structure the response\n"
+                    "3. Any specific document content to reference"
                 )
             ]
         
@@ -177,24 +204,53 @@ async def generate_response(state: Union[Dict[str, Any], AgentState]) -> Dict[st
             for keyword in ["summarize", "summary", "summarise", "summarisation", "summarization"]
         )
         
-        # Format context with clear separation between messages and file content
-        context_items = []
-        for msg in state_obj.context:
-            if msg.get("text"):
-                # Split text to separate message text from file content
-                text_parts = msg["text"].split("\n\nFile Content:\n")
-                if len(text_parts) > 1:
-                    context_items.append(f"Message: {text_parts[0]}")
-                    context_items.append(f"Attached Document Content: {text_parts[1]}")
-                else:
-                    context_items.append(f"Message: {text_parts[0]}")
+        # Organize context by type
+        regular_messages = []
+        document_content = []
         
-        context_text = "\n\n".join(context_items)
+        for msg in state_obj.context:
+            if msg.get("file_content"):
+                document_content.append({
+                    "content": msg["file_content"],
+                    "similarity": msg.get("similarity", 0),
+                    "created_at": msg.get("created_at")
+                })
+            if msg.get("text"):
+                regular_messages.append({
+                    "text": msg["text"],
+                    "similarity": msg.get("similarity", 0),
+                    "created_at": msg.get("created_at")
+                })
+        
+        # Sort by similarity
+        document_content.sort(key=lambda x: x["similarity"], reverse=True)
+        regular_messages.sort(key=lambda x: x["similarity"], reverse=True)
+        
+        # Format context text
+        context_sections = []
+        
+        if document_content:
+            doc_text = "\n\n".join([
+                f"Document Content (Similarity: {doc['similarity']:.2f}):\n{doc['content']}"
+                for doc in document_content
+            ])
+            context_sections.append("### Document Content ###\n" + doc_text)
+        
+        if regular_messages:
+            msg_text = "\n\n".join([
+                f"Message (Similarity: {msg['similarity']:.2f}):\n{msg['text']}"
+                for msg in regular_messages
+            ])
+            context_sections.append("### Chat Messages ###\n" + msg_text)
+        
+        context_text = "\n\n" + "\n\n".join(context_sections)
         
         if is_summary_request:
             messages = [
                 openai_service.create_system_message(
-                    "You are Inna, a helpful and smart startup co-founder. Create a clear, well-organized summary of the chat history. Focus on key points, decisions, and important information. Use sections and bullet points for better readability."
+                    "You are Inna, a helpful and smart startup co-founder. Create a clear, well-organized summary "
+                    "of the chat history. Focus on key points, decisions, and important information. "
+                    "Use sections and bullet points for better readability."
                 ),
                 openai_service.create_user_message(
                     f"Chat History:\n{context_text}\n\nPlan:\n{state_obj.plan}\n\nCreate a comprehensive summary:"
@@ -203,14 +259,25 @@ async def generate_response(state: Union[Dict[str, Any], AgentState]) -> Dict[st
         else:
             messages = [
                 openai_service.create_system_message(
-                    "You are Inna, a helpful and smart startup co-founder. Respond in a clear, professional manner. When referencing document content, be specific about which parts you're using to answer the question."
+                    "You are Inna, a helpful and smart startup co-founder. When responding:\n"
+                    "1. Focus on the most relevant information (highest similarity scores)\n"
+                    "2. When referencing document content, be specific about which parts you're using\n"
+                    "3. Maintain a professional and clear tone\n"
+                    "4. If using multiple sources, clearly organize the information"
                 ),
                 openai_service.create_user_message(
-                    f"Context:\n{context_text}\n\nPlan:\n{state_obj.plan}\n\nUser message: {state_obj.current_message.get('text', '')}\n\nRespond:"
+                    f"Context:\n{context_text}\n\n"
+                    f"Plan:\n{state_obj.plan}\n\n"
+                    f"User message: {state_obj.current_message.get('text', '')}\n\n"
+                    "Provide a detailed response:"
                 )
             ]
         
-        state_obj.response = await openai_service.get_completion(messages, temperature=0.7)
+        state_obj.response = await openai_service.get_completion(
+            messages,
+            temperature=0.7,
+            max_tokens=2000  # Increased for more detailed responses
+        )
         return state_obj.to_dict()
     except Exception as e:
         logger.error(f"Error in generate_response: {str(e)}", exc_info=True)

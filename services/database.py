@@ -331,4 +331,85 @@ class DatabaseService:
         
         return result.count if result.count is not None else 0
 
+    async def search_messages_with_content(
+        self,
+        chat_id: int,
+        query_embedding: List[float],
+        text_search: Optional[str] = None,
+        threshold: float = 0.5,
+        limit: int = 10
+    ) -> List[Dict[str, Any]]:
+        """Search messages using both vector similarity and text content."""
+        logger.debug(f"Searching messages for chat {chat_id}")
+        try:
+            # First, get similar messages by embedding
+            similar_messages = self.client.rpc(
+                "match_messages",
+                {
+                    "query_embedding": query_embedding,
+                    "match_threshold": threshold,
+                    "match_count": limit * 2  # Get more to filter
+                }
+            ).execute()
+            
+            message_ids = [msg["id"] for msg in similar_messages.data] if similar_messages.data else []
+            
+            # If we have a text search, use it to filter messages
+            if text_search and message_ids:
+                # Build the query to search in both text and file_content
+                query = self.client.table("inna_messages")\
+                    .select("*")\
+                    .eq("chat_id", chat_id)\
+                    .in_("id", message_ids)
+                
+                # Add text search conditions
+                text_lower = text_search.lower()
+                result = query.execute()
+                
+                # Filter messages that contain the search text in either text or file_content
+                filtered_messages = []
+                for msg in result.data:
+                    text_content = (msg.get("text") or "").lower()
+                    file_content = (msg.get("file_content") or "").lower()
+                    
+                    if text_lower in text_content or text_lower in file_content:
+                        # Find the similarity score from the original results
+                        similarity = next(
+                            (m["similarity"] for m in similar_messages.data if m["id"] == msg["id"]),
+                            0.0
+                        )
+                        msg["similarity"] = similarity
+                        filtered_messages.append(msg)
+                
+                # Sort by similarity and limit results
+                filtered_messages.sort(key=lambda x: x["similarity"], reverse=True)
+                return filtered_messages[:limit]
+            
+            # If no text search, just get the full messages for the similar ones
+            if message_ids:
+                result = self.client.table("inna_messages")\
+                    .select("*")\
+                    .in_("id", message_ids)\
+                    .execute()
+                
+                # Add similarity scores from the vector search
+                full_messages = []
+                for msg in result.data:
+                    similarity = next(
+                        (m["similarity"] for m in similar_messages.data if m["id"] == msg["id"]),
+                        0.0
+                    )
+                    msg["similarity"] = similarity
+                    full_messages.append(msg)
+                
+                # Sort by similarity and limit results
+                full_messages.sort(key=lambda x: x["similarity"], reverse=True)
+                return full_messages[:limit]
+            
+            return []
+            
+        except Exception as e:
+            logger.error(f"Error searching messages: {str(e)}", exc_info=True)
+            raise
+
 db_service = DatabaseService() 
