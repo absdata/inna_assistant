@@ -26,6 +26,7 @@ class Config:
         self.debug_mode: bool = self._get_env("DEBUG_MODE", "false").lower() == "true"
 
         # Google Doc Configuration
+        self.google_service_account: str = self._get_env("GOOGLE_SERVICE_ACCOUNT")
         self.google_service_account_key: str = self._get_env("GOOGLE_SERVICE_ACCOUNT_KEY")
         
         # Agent Configuration
