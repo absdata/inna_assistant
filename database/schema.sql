@@ -37,8 +37,12 @@ create table if not exists inna_message_embeddings (
     chat_id bigint not null,
     text text not null,
     embedding vector(2000) not null,
+    chunk_index int,  -- NULL for regular messages, index number for file chunks
     created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
+
+-- Create index for chunk lookups
+create index if not exists inna_message_embeddings_chunk_idx on inna_message_embeddings(message_id, chunk_index);
 
 -- Tasks table for planning and roadmap
 create table if not exists inna_tasks (
@@ -117,6 +121,7 @@ returns table (
     id bigint,
     chat_id bigint,
     text text,
+    chunk_index int,
     similarity float
 )
 language sql stable
@@ -125,6 +130,7 @@ as $$
         inna_message_embeddings.id,
         inna_message_embeddings.chat_id,
         inna_message_embeddings.text,
+        inna_message_embeddings.chunk_index,
         1 - (inna_message_embeddings.embedding <=> query_embedding) as similarity
     from inna_message_embeddings
     where 1 - (inna_message_embeddings.embedding <=> query_embedding) > match_threshold

@@ -140,18 +140,34 @@ class DatabaseService:
         message_id: int,
         chat_id: int,
         text: str,
-        embedding: List[float]
+        embedding: List[float],
+        chunk_index: Optional[int] = None
     ) -> Dict[str, Any]:
         """Save a message embedding to the database."""
         embedding_data = {
             "message_id": message_id,
             "chat_id": chat_id,
             "text": text,
-            "embedding": embedding
+            "embedding": embedding,
+            "chunk_index": chunk_index
         }
         
+        self._log_query("INSERT", "inna_message_embeddings", embedding_data)
         result = self.client.table("inna_message_embeddings").insert(embedding_data).execute()
+        self._log_result("INSERT", result)
         return result.data[0] if result.data else None
+
+    async def get_embeddings_for_message(
+        self,
+        message_id: int
+    ) -> List[Dict[str, Any]]:
+        """Get all embeddings for a message, including chunks."""
+        result = self.client.table("inna_message_embeddings")\
+            .select("*")\
+            .eq("message_id", message_id)\
+            .order("chunk_index")\
+            .execute()
+        return result.data if result.data else []
 
     async def get_similar_messages(
         self,
@@ -418,13 +434,48 @@ class DatabaseService:
         
         return result.count if result.count is not None else 0
 
+    async def setup_match_messages_function(self):
+        """Set up or update the match_messages database function."""
+        function_sql = """
+        create or replace function match_messages(
+            query_embedding vector(2000),
+            match_threshold float,
+            match_count int
+        )
+        returns table (
+            id bigint,
+            chat_id bigint,
+            text text,
+            chunk_index int,
+            similarity float
+        )
+        language sql stable
+        as $$
+            select
+                inna_message_embeddings.id,
+                inna_message_embeddings.chat_id,
+                inna_message_embeddings.text,
+                inna_message_embeddings.chunk_index,
+                1 - (inna_message_embeddings.embedding <=> query_embedding) as similarity
+            from inna_message_embeddings
+            where 1 - (inna_message_embeddings.embedding <=> query_embedding) > match_threshold
+            order by inna_message_embeddings.embedding <=> query_embedding
+            limit match_count;
+        $$;
+        """
+        try:
+            await self.client.rpc("match_messages", {}).execute()
+        except Exception:
+            # Function doesn't exist or needs updating
+            self.client.query(function_sql).execute()
+
     async def search_messages_with_content(
         self,
         chat_id: int,
         query_embedding: List[float],
         text_search: Optional[str] = None,
-        threshold: float = 0.5,
-        limit: int = 10
+        threshold: float = 0.3,  # Lower threshold for better recall
+        limit: int = 20  # Increased limit to find more potential matches
     ) -> List[Dict[str, Any]]:
         """Search messages using both vector similarity and text content."""
         logger.debug(
@@ -438,11 +489,11 @@ class DatabaseService:
         )
         
         try:
-            # First, get similar messages by embedding
+            # First, get similar messages by embedding with a higher limit for initial matching
             rpc_params = {
                 "query_embedding": query_embedding,
                 "match_threshold": threshold,
-                "match_count": limit * 2
+                "match_count": limit * 3  # Get more initial matches to ensure we don't miss relevant chunks
             }
             self._log_query("RPC", "match_messages", rpc_params)
             
@@ -454,103 +505,95 @@ class DatabaseService:
             self._log_result("Vector Search", similar_messages)
             logger.debug(f"Vector search found {len(similar_messages.data) if similar_messages.data else 0} matches")
             
-            message_ids = [msg["id"] for msg in similar_messages.data] if similar_messages.data else []
+            # Group results by message_id to combine chunks
+            message_groups = {}
+            for msg in similar_messages.data:
+                message_id = msg["id"]
+                if message_id not in message_groups:
+                    message_groups[message_id] = {
+                        "chunks": [],
+                        "max_similarity": msg["similarity"],
+                        "total_similarity": 0,  # Track total similarity for better ranking
+                        "matching_chunk_count": 0  # Count matching chunks for better document relevance
+                    }
+                message_groups[message_id]["chunks"].append(msg)
+                message_groups[message_id]["total_similarity"] += msg["similarity"]
+                message_groups[message_id]["matching_chunk_count"] += 1
+                message_groups[message_id]["max_similarity"] = max(
+                    message_groups[message_id]["max_similarity"],
+                    msg["similarity"]
+                )
             
-            # If we have a text search, use it to filter messages
-            if text_search and message_ids:
-                logger.debug(f"Performing text search filtering for {len(message_ids)} messages")
-                query_params = {
-                    "chat_id": chat_id,
-                    "message_ids": message_ids
-                }
-                self._log_query("SELECT", "inna_messages", query_params)
-                
-                # Build the query to search in both text and file_content
-                query = self.client.table("inna_messages")\
+            # Get full message content for each group
+            result_messages = []
+            for message_id, group in message_groups.items():
+                # Get the base message
+                message = await self.client.table("inna_messages")\
                     .select("*")\
-                    .eq("chat_id", chat_id)\
-                    .in_("id", message_ids)
-                
-                result = query.execute()
-                self._log_result("Text Search", result)
-                
-                # Filter messages that contain the search text
-                text_lower = text_search.lower()
-                filtered_messages = []
-                for msg in result.data:
-                    text_content = (msg.get("text") or "").lower()
-                    
-                    # Get file content from chunks if available
-                    file_content = await self.get_file_content(msg["id"])
-                    if file_content:
-                        file_content = file_content.lower()
-                    else:
-                        file_content = ""
-                    
-                    if text_lower in text_content or text_lower in file_content:
-                        similarity = next(
-                            (m["similarity"] for m in similar_messages.data if m["id"] == msg["id"]),
-                            0.0
-                        )
-                        msg["similarity"] = similarity
-                        msg["file_content"] = file_content  # Add the complete file content
-                        filtered_messages.append(msg)
-                        logger.debug(
-                            f"Match found:\n"
-                            f"ID: {msg['id']}\n"
-                            f"Similarity: {similarity}\n"
-                            f"Has file content: {'Yes' if file_content else 'No'}"
-                        )
-                
-                filtered_messages.sort(key=lambda x: x["similarity"], reverse=True)
-                result_messages = filtered_messages[:limit]
-                logger.debug(f"Final filtered results: {len(result_messages)} messages")
-                return result_messages
-            
-            # If no text search, just get the full messages
-            if message_ids:
-                logger.debug("Retrieving full message content for vector matches")
-                query_params = {
-                    "message_ids": message_ids
-                }
-                self._log_query("SELECT", "inna_messages", query_params)
-                
-                result = self.client.table("inna_messages")\
-                    .select("*")\
-                    .in_("id", message_ids)\
+                    .eq("id", message_id)\
+                    .single()\
                     .execute()
                 
-                self._log_result("Full Message Retrieval", result)
-                
-                # Add similarity scores and get file content
-                full_messages = []
-                for msg in result.data:
-                    similarity = next(
-                        (m["similarity"] for m in similar_messages.data if m["id"] == msg["id"]),
-                        0.0
-                    )
-                    msg["similarity"] = similarity
+                if message.data:
+                    # Calculate average similarity for better document ranking
+                    avg_similarity = group["total_similarity"] / group["matching_chunk_count"]
                     
-                    # Get file content from chunks if available
-                    file_content = await self.get_file_content(msg["id"])
+                    # Get file content if needed
+                    file_content = await self.get_file_content(message_id)
                     if file_content:
-                        msg["file_content"] = file_content
+                        message.data["file_content"] = file_content
+                        
+                        # Boost similarity score for messages with file content
+                        # This helps prioritize document content over chat messages
+                        if group["matching_chunk_count"] > 1:
+                            avg_similarity *= 1.2  # 20% boost for multi-chunk matches
                     
-                    full_messages.append(msg)
+                    # Add similarity scores and chunk information
+                    message.data["max_similarity"] = group["max_similarity"]
+                    message.data["avg_similarity"] = avg_similarity
+                    message.data["matching_chunk_count"] = group["matching_chunk_count"]
+                    message.data["matching_chunks"] = sorted([
+                        {
+                            "chunk_index": chunk["chunk_index"],
+                            "similarity": chunk["similarity"],
+                            "text": chunk["text"]
+                        }
+                        for chunk in group["chunks"]
+                    ], key=lambda x: x["similarity"], reverse=True)
+                    
+                    # If we have a text search, check content
+                    if text_search:
+                        text_lower = text_search.lower()
+                        message_text = (message.data.get("text") or "").lower()
+                        file_content_lower = (file_content or "").lower()
+                        
+                        # If text is found in content, boost the similarity score
+                        if text_lower in message_text or text_lower in file_content_lower:
+                            avg_similarity *= 1.3  # 30% boost for text match
+                    
+                    message.data["final_similarity"] = avg_similarity
+                    result_messages.append(message.data)
+                    
                     logger.debug(
-                        f"Processing message:\n"
-                        f"ID: {msg['id']}\n"
-                        f"Similarity: {similarity}\n"
-                        f"Has file content: {'Yes' if file_content else 'No'}"
+                        f"Processed message {message_id}:\n"
+                        f"Max Similarity: {group['max_similarity']:.3f}\n"
+                        f"Avg Similarity: {avg_similarity:.3f}\n"
+                        f"Matching Chunks: {group['matching_chunk_count']}\n"
+                        f"Has File Content: {'Yes' if file_content else 'No'}"
                     )
-                
-                full_messages.sort(key=lambda x: x["similarity"], reverse=True)
-                result_messages = full_messages[:limit]
-                logger.debug(f"Final results: {len(result_messages)} messages")
-                return result_messages
             
-            logger.debug("No matching messages found")
-            return []
+            # Sort by final similarity score
+            result_messages.sort(key=lambda x: x["final_similarity"], reverse=True)
+            final_results = result_messages[:limit]
+            
+            logger.debug(
+                f"Search Results Summary:\n"
+                f"Total Messages Found: {len(result_messages)}\n"
+                f"Returned Results: {len(final_results)}\n"
+                f"Top Similarity Scores: {[f'{msg.get('final_similarity', 0):.3f}' for msg in final_results[:3]]}"
+            )
+            
+            return final_results
             
         except Exception as e:
             logger.error(f"Error searching messages: {str(e)}", exc_info=True)

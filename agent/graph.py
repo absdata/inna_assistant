@@ -20,6 +20,7 @@ class AgentState(BaseModel):
     chat_id: int = Field(default=0)
     plan: str = Field(default="")
     response: str = Field(default="")
+    formatted_context: str = Field(default="")
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert state to dictionary format."""
@@ -29,7 +30,8 @@ class AgentState(BaseModel):
             "current_message": dict(self.current_message),
             "chat_id": self.chat_id,
             "plan": str(self.plan),
-            "response": str(self.response)
+            "response": str(self.response),
+            "formatted_context": str(self.formatted_context)
         }
 
 def ensure_dict_state(state: Union[Dict[str, Any], AgentState]) -> Dict[str, Any]:
@@ -52,56 +54,116 @@ async def retrieve_context(state: Union[Dict[str, Any], AgentState]) -> Dict[str
         
         # Get the current message text
         query_text = state_obj.current_message.get("text", "").lower()
-        logger.debug(f"Processing query: {query_text}")
         
-        # Check if this is a summarization request
-        is_summary_request = any(
-            keyword in query_text 
-            for keyword in ["summarize", "summary", "summarise", "summarisation", "summarization"]
-        )
+        # Common words that might indicate document content
+        doc_indicators = ["document", "pdf", "file", "gtm", "strategy", "plan", "report", "presentation", "analysis"]
+        has_doc_reference = any(term in query_text.lower() for term in doc_indicators)
         
-        if is_summary_request:
-            # For summarization, get full chat history
-            logger.info("Summarization request detected - retrieving full chat history")
-            chat_history = await db_service.get_chat_history(
-                chat_id=state_obj.chat_id,
-                limit=100  # Get last 100 messages
-            )
-            state_obj.context = chat_history
-            logger.info(f"Retrieved {len(chat_history)} messages for summarization")
-        else:
-            # For regular queries, use combined search approach
-            logger.info("Regular query detected - performing combined search")
-            try:
-                # Generate embedding for the query
-                embedding = await openai_service.get_embedding(query_text)
-                
-                # Extract key terms from the query
-                # Common words that might indicate document content
-                doc_indicators = ["document", "pdf", "file", "gtm", "strategy", "plan", "report"]
-                has_doc_reference = any(term in query_text for term in doc_indicators)
-                
-                # Perform the combined search
-                messages = await db_service.search_messages_with_content(
-                    chat_id=state_obj.chat_id,
-                    query_embedding=embedding,
-                    text_search=query_text if has_doc_reference else None,  # Only use text search if likely looking for document content
-                    threshold=0.5,
-                    limit=10
-                )
-                
-                logger.info(f"Found {len(messages)} relevant messages")
-                for msg in messages:
-                    logger.debug(f"Message similarity: {msg.get('similarity', 0)}")
-                    if msg.get("file_content"):
-                        logger.debug("Message contains file content")
-                
-                state_obj.context = messages
-                
-            except Exception as e:
-                logger.error(f"Error in search process: {str(e)}", exc_info=True)
-                state_obj.context = []
+        logger.info(f"Processing query: {query_text}")
+        logger.debug(f"Document reference detected: {has_doc_reference}")
+        
+        try:
+            # Generate embedding for the query
+            embedding = await openai_service.get_embedding(query_text)
             
+            # Adjust search parameters based on query type
+            search_params = {
+                "chat_id": state_obj.chat_id,
+                "query_embedding": embedding,
+                "text_search": query_text if has_doc_reference else None,
+                "threshold": 0.3 if has_doc_reference else 0.5,  # Lower threshold for document searches
+                "limit": 20 if has_doc_reference else 10  # Higher limit for document searches
+            }
+            
+            # Perform the search
+            messages = await db_service.search_messages_with_content(**search_params)
+            
+            logger.info(f"Found {len(messages)} relevant messages")
+            
+            # Process and organize the results
+            doc_content = []
+            chat_messages = []
+            
+            for msg in messages:
+                # Calculate a relevance score based on similarity and content type
+                relevance = msg.get("final_similarity", 0)
+                
+                if msg.get("file_content"):
+                    # Extract relevant sections from file content using matching chunks
+                    chunks = msg.get("matching_chunks", [])
+                    if chunks:
+                        # Sort chunks by similarity
+                        chunks.sort(key=lambda x: x["similarity"], reverse=True)
+                        
+                        # Get the context around the most relevant chunks
+                        file_content = msg["file_content"]
+                        relevant_sections = []
+                        
+                        for chunk in chunks[:3]:  # Use top 3 most relevant chunks
+                            chunk_text = chunk["text"]
+                            if "chunk_" in chunk_text:  # Remove chunk identifier if present
+                                chunk_text = chunk_text.split(":", 1)[1].strip()
+                            
+                            # Add chunk with its similarity score
+                            relevant_sections.append({
+                                "content": chunk_text,
+                                "similarity": chunk["similarity"]
+                            })
+                        
+                        doc_content.append({
+                            "sections": relevant_sections,
+                            "relevance": relevance,
+                            "created_at": msg.get("created_at")
+                        })
+                else:
+                    # Regular chat message
+                    chat_messages.append({
+                        "text": msg.get("text", ""),
+                        "relevance": relevance,
+                        "created_at": msg.get("created_at")
+                    })
+            
+            # Sort both lists by relevance
+            doc_content.sort(key=lambda x: x["relevance"], reverse=True)
+            chat_messages.sort(key=lambda x: x["relevance"], reverse=True)
+            
+            # Format the context sections
+            context_sections = []
+            
+            if doc_content:
+                doc_text = "\n\n".join([
+                    f"Document Content (Relevance: {doc['relevance']:.2f}):\n" +
+                    "\n".join([
+                        f"Section (Similarity: {section['similarity']:.2f}):\n{section['content']}"
+                        for section in doc["sections"]
+                    ])
+                    for doc in doc_content[:5]  # Limit to top 5 most relevant documents
+                ])
+                context_sections.append("### Document Content ###\n" + doc_text)
+            
+            if chat_messages:
+                msg_text = "\n\n".join([
+                    f"Message (Relevance: {msg['relevance']:.2f}):\n{msg['text']}"
+                    for msg in chat_messages[:5]  # Limit to top 5 most relevant messages
+                ])
+                context_sections.append("### Chat Messages ###\n" + msg_text)
+            
+            # Update state with organized context
+            state_obj.context = messages  # Keep full context for reference
+            state_obj.formatted_context = "\n\n".join(context_sections)
+            
+            logger.debug(
+                f"Context Summary:\n"
+                f"Document Sections: {len(doc_content)}\n"
+                f"Chat Messages: {len(chat_messages)}\n"
+                f"Total Context Length: {len(state_obj.formatted_context)}"
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in search process: {str(e)}", exc_info=True)
+            state_obj.context = []
+            state_obj.formatted_context = ""
+        
         return state_obj.to_dict()
     except Exception as e:
         logger.error(f"Error in retrieve_context: {str(e)}", exc_info=True)
@@ -119,54 +181,13 @@ async def create_plan(state: Union[Dict[str, Any], AgentState]) -> Dict[str, Any
             for keyword in ["summarize", "summary", "summarise", "summarisation", "summarization"]
         )
         
-        # Organize context by type
-        regular_messages = []
-        document_content = []
-        
-        for msg in state_obj.context:
-            if msg.get("file_content"):
-                document_content.append({
-                    "content": msg["file_content"],
-                    "similarity": msg.get("similarity", 0),
-                    "created_at": msg.get("created_at")
-                })
-            if msg.get("text"):
-                regular_messages.append({
-                    "text": msg["text"],
-                    "similarity": msg.get("similarity", 0),
-                    "created_at": msg.get("created_at")
-                })
-        
-        # Sort by similarity
-        document_content.sort(key=lambda x: x["similarity"], reverse=True)
-        regular_messages.sort(key=lambda x: x["similarity"], reverse=True)
-        
-        # Format context text
-        context_sections = []
-        
-        if document_content:
-            doc_text = "\n\n".join([
-                f"Document Content (Similarity: {doc['similarity']:.2f}):\n{doc['content']}"
-                for doc in document_content
-            ])
-            context_sections.append("### Document Content ###\n" + doc_text)
-        
-        if regular_messages:
-            msg_text = "\n\n".join([
-                f"Message (Similarity: {msg['similarity']:.2f}):\n{msg['text']}"
-                for msg in regular_messages
-            ])
-            context_sections.append("### Chat Messages ###\n" + msg_text)
-        
-        context_text = "\n\n" + "\n\n".join(context_sections)
-        
         if is_summary_request:
             messages = [
                 openai_service.create_system_message(
                     "You are a planning agent. Create a plan for summarizing the chat history in a clear, organized way."
                 ),
                 openai_service.create_user_message(
-                    f"Chat History:\n{context_text}\n\nCreate a plan for summarizing this chat history:"
+                    f"Chat History:\n{state_obj.formatted_context}\n\nCreate a plan for summarizing this chat history:"
                 )
             ]
         else:
@@ -174,15 +195,15 @@ async def create_plan(state: Union[Dict[str, Any], AgentState]) -> Dict[str, Any
                 openai_service.create_system_message(
                     "You are a planning agent. Create a brief plan for how to respond to the user's message. "
                     "Pay special attention to document content and its relevance to the query. "
-                    "Consider the similarity scores when deciding which information to use."
+                    "Consider the relevance scores when deciding which information to use."
                 ),
                 openai_service.create_user_message(
-                    f"Context:\n{context_text}\n\n"
+                    f"Context:\n{state_obj.formatted_context}\n\n"
                     f"User message: {state_obj.current_message.get('text', '')}\n\n"
                     "Create a plan that specifies:\n"
-                    "1. Which pieces of information to use (considering similarity scores)\n"
+                    "1. Which pieces of information to use (considering relevance scores)\n"
                     "2. How to structure the response\n"
-                    "3. Any specific document content to reference"
+                    "3. Any specific document sections to reference"
                 )
             ]
         

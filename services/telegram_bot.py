@@ -126,29 +126,39 @@ class TelegramBotService:
             # If we have file content, save it in chunks
             if file_content:
                 logger.info("Saving file content in chunks...")
-                await db_service.save_file_chunks(
+                saved_chunks = await db_service.save_file_chunks(
                     message_id=saved_message["id"],
                     content=file_content
                 )
                 
-                # Generate embeddings for each chunk
-                logger.debug("Generating embeddings for file content chunks...")
-                chunk_size = 100000  # Same as in save_file_chunks
-                for i in range(0, len(file_content), chunk_size):
-                    chunk = file_content[i:i + chunk_size]
-                    content_to_embed = (text + "\n" + chunk).strip()
-                    try:
-                        embedding = await openai_service.get_embedding(content_to_embed)
-                        await db_service.save_embedding(
-                            message_id=saved_message["id"],
-                            chat_id=chat_id,
-                            text=content_to_embed,
-                            embedding=embedding
-                        )
-                        logger.info(f"Saved embedding for chunk {i // chunk_size + 1}")
-                    except Exception as embed_error:
-                        logger.error(f"Error processing chunk {i // chunk_size + 1}: {str(embed_error)}", exc_info=True)
-                        continue
+                if saved_chunks:
+                    # Generate embeddings for each chunk
+                    logger.debug("Generating embeddings for file content chunks...")
+                    chunk_size = 100000  # Same as in save_file_chunks
+                    for i in range(0, len(file_content), chunk_size):
+                        chunk = file_content[i:i + chunk_size]
+                        chunk_index = i // chunk_size
+                        
+                        # Create a unique identifier for this chunk's embedding
+                        chunk_identifier = f"chunk_{chunk_index}"
+                        content_to_embed = (text + "\n" + chunk).strip()
+                        
+                        try:
+                            embedding = await openai_service.get_embedding(content_to_embed)
+                            # Save embedding with chunk reference
+                            await db_service.save_embedding(
+                                message_id=saved_message["id"],
+                                chat_id=chat_id,
+                                text=f"{chunk_identifier}: {content_to_embed}",
+                                embedding=embedding,
+                                chunk_index=chunk_index  # Add chunk_index to identify which chunk this embedding belongs to
+                            )
+                            logger.info(f"Saved embedding for chunk {chunk_index + 1}")
+                        except Exception as embed_error:
+                            logger.error(f"Error processing chunk {chunk_index + 1}: {str(embed_error)}", exc_info=True)
+                            continue
+                else:
+                    logger.error("Failed to save file chunks")
             else:
                 # Generate embedding for text-only message
                 if text:
