@@ -3,6 +3,7 @@ from typing import List, Dict, Optional, Any
 from datetime import datetime, timedelta
 from config.config import config
 import logging
+from utils.embedding_compressor import compressor
 
 # Create logger for this module
 logger = logging.getLogger(__name__)
@@ -13,8 +14,19 @@ class DatabaseService:
         self.client: Client = create_client(config.supabase_url, config.supabase_key)
         # Set logging level to DEBUG to see all logs
         logger.setLevel(logging.DEBUG)
+        self._setup_database()
         logger.info("Database service initialized successfully")
     
+    def _setup_database(self):
+        """Set up database tables and functions."""
+        try:
+            # Enable pgvector extension if not already enabled
+            self.client.query("create extension if not exists vector").execute()
+            logger.info("Vector extension enabled")
+        except Exception as e:
+            logger.error(f"Error setting up database: {str(e)}", exc_info=True)
+            raise
+
     def _log_query(self, operation: str, table: str, params: Dict[str, Any]) -> None:
         """Log database query details."""
         logger.debug(
@@ -143,18 +155,25 @@ class DatabaseService:
         chunk_index: Optional[int] = None
     ) -> Dict[str, Any]:
         """Save a message embedding to the database."""
-        embedding_data = {
-            "message_id": message_id,
-            "chat_id": chat_id,
-            "text": text,
-            "embedding": embedding,
-            "chunk_index": chunk_index
-        }
-        
-        self._log_query("INSERT", "inna_message_embeddings", embedding_data)
-        result = self.client.table("inna_message_embeddings").insert(embedding_data).execute()
-        self._log_result("INSERT", result)
-        return result.data[0] if result.data else None
+        try:
+            # Compress embedding to 2000D
+            compressed_embedding = compressor.compress(embedding)
+            
+            embedding_data = {
+                "message_id": message_id,
+                "chat_id": chat_id,
+                "text": text,
+                "embedding": compressed_embedding,
+                "chunk_index": chunk_index
+            }
+            
+            self._log_query("INSERT", "inna_message_embeddings", embedding_data)
+            result = self.client.table("inna_message_embeddings").insert(embedding_data).execute()
+            self._log_result("INSERT", result)
+            return result.data[0] if result.data else None
+        except Exception as e:
+            logger.error(f"Error saving embedding: {str(e)}", exc_info=True)
+            raise
 
     async def get_embeddings_for_message(
         self,
@@ -178,10 +197,13 @@ class DatabaseService:
         """Get similar messages based on embedding similarity."""
         logger.debug(f"Finding similar messages for chat {chat_id} with threshold {threshold}")
         try:
+            # Compress query embedding to 2000D
+            compressed_embedding = compressor.compress(embedding)
+            
             result = self.client.rpc(
                 "match_messages",
                 {
-                    "query_embedding": embedding,
+                    "query_embedding": compressed_embedding,
                     "match_threshold": threshold,
                     "match_count": limit
                 }
@@ -488,9 +510,12 @@ class DatabaseService:
         )
         
         try:
+            # Compress query embedding to 2000D
+            compressed_embedding = compressor.compress(query_embedding)
+            
             # First, get similar messages by embedding with a higher limit for initial matching
             rpc_params = {
-                "query_embedding": query_embedding,
+                "query_embedding": compressed_embedding,
                 "match_threshold": threshold,
                 "match_count": limit * 3  # Get more initial matches to ensure we don't miss relevant chunks
             }
@@ -615,18 +640,20 @@ class DatabaseService:
         metadata: Dict[str, Any] = None
     ) -> Dict[str, Any]:
         """Save an agent memory to the database."""
-        memory_data = {
-            "agent_role": role,
-            "chat_id": chat_id,
-            "context": context,
-            "embedding": embedding,
-            "relevance_score": relevance_score,
-            "metadata": metadata or {}
-        }
-        
-        self._log_query("INSERT", "inna_agent_memory", memory_data)
-        
         try:
+            # Compress embedding to 2000D
+            compressed_embedding = compressor.compress(embedding)
+            
+            memory_data = {
+                "agent_role": role,
+                "chat_id": chat_id,
+                "context": context,
+                "embedding": compressed_embedding,
+                "relevance_score": relevance_score,
+                "metadata": metadata or {}
+            }
+            
+            self._log_query("INSERT", "inna_agent_memory", memory_data)
             result = self.client.table("inna_agent_memory").insert(memory_data).execute()
             self._log_result("INSERT", result)
             
@@ -640,9 +667,54 @@ class DatabaseService:
             logger.error(f"Error saving memory: {str(e)}", exc_info=True)
             raise
 
+    async def _migrate_embeddings(self, table_name: str, embedding_column: str = "embedding"):
+        """Migrate embeddings from 1536D to 2000D."""
+        try:
+            # Get all records with 1536D embeddings
+            result = self.client.table(table_name)\
+                .select("id", embedding_column)\
+                .execute()
+            
+            if not result.data:
+                return
+            
+            for record in result.data:
+                embedding = record[embedding_column]
+                if embedding and len(embedding) == 1536:
+                    # Compress the embedding to 2000D
+                    compressed = compressor.compress(embedding)
+                    
+                    # Update the record
+                    self.client.table(table_name)\
+                        .update({embedding_column: compressed})\
+                        .eq("id", record["id"])\
+                        .execute()
+            
+            logger.info(f"Successfully migrated embeddings in {table_name}")
+        except Exception as e:
+            logger.error(f"Error migrating embeddings in {table_name}: {str(e)}", exc_info=True)
+
+    async def migrate_all_embeddings(self):
+        """Migrate all embeddings in all tables."""
+        try:
+            tables = [
+                "inna_message_embeddings",
+                "inna_tasks",
+                "inna_summaries",
+                "inna_agent_memory"
+            ]
+            
+            for table in tables:
+                await self._migrate_embeddings(table)
+            
+            logger.info("Successfully migrated all embeddings")
+        except Exception as e:
+            logger.error(f"Error during embedding migration: {str(e)}", exc_info=True)
+            raise
+
     async def get_agent_memories(
         self,
-        embedding: Optional[List[float]] = None,
+        embedding: List[float],
         role: Optional[str] = None,
         chat_id: Optional[int] = None,
         threshold: float = 0.3,
@@ -650,44 +722,36 @@ class DatabaseService:
         start_time: Optional[datetime] = None,
         end_time: Optional[datetime] = None
     ) -> List[Dict[str, Any]]:
-        """Get relevant agent memories."""
+        """Get relevant agent memories based on embedding similarity."""
+        logger.debug(f"Retrieving memories for role: {role}, chat_id: {chat_id}")
         try:
-            if embedding:
-                # Use vector similarity search
-                params = {
-                    "query_embedding": embedding,
-                    "agent_role": role,
-                    "match_threshold": threshold,
-                    "match_count": limit
-                }
-                
-                # Only add time parameters if they are provided
-                if start_time:
-                    params["start_time"] = start_time.isoformat()
-                if end_time:
-                    params["end_time"] = end_time.isoformat()
-                
-                result = self.client.rpc(
-                    "match_agent_memories",
-                    params
-                ).execute()
-            else:
-                # Use regular query
-                query = self.client.table("inna_agent_memory").select("*")
-                
-                if role:
-                    query = query.eq("agent_role", role)
-                if chat_id:
-                    query = query.eq("chat_id", chat_id)
-                if start_time:
-                    query = query.gte("created_at", start_time.isoformat())
-                if end_time:
-                    query = query.lte("created_at", end_time.isoformat())
-                
-                query = query.order("created_at", desc=True).limit(limit)
-                result = query.execute()
+            # Compress query embedding to 2000D
+            compressed_embedding = compressor.compress(embedding)
             
-            self._log_result("SELECT", result)
+            params = {
+                "query_embedding": compressed_embedding,
+                "agent_role": role,
+                "match_threshold": threshold,
+                "match_count": limit
+            }
+            
+            if start_time:
+                params["start_time"] = start_time.isoformat()
+            if end_time:
+                params["end_time"] = end_time.isoformat()
+            
+            # Call the match_agent_memories function
+            result = self.client.rpc(
+                "match_agent_memories",
+                params
+            ).execute()
+            
+            if result.data:
+                logger.info(f"Found {len(result.data)} relevant memories")
+                logger.debug(f"Memory similarity scores: {[mem['similarity'] for mem in result.data]}")
+            else:
+                logger.info("No relevant memories found")
+            
             return result.data if result.data else []
             
         except Exception as e:
