@@ -232,7 +232,9 @@ class TelegramBotService:
                     "chat_id": chat_id,
                     "plan": "",
                     "response": "",
-                    "formatted_context": ""
+                    "formatted_context": "",
+                    "criticism": "",  # Initialize with empty string
+                    "task_updates": ""  # Initialize with empty string
                 }
                 
                 # Run the agent workflow
