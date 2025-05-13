@@ -18,19 +18,29 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app):
     """Startup and shutdown events for FastAPI."""
-    # Start the scheduler
-    scheduler.start()
-    
-    # Start the Telegram bot
-    await bot_service.start()
-    
-    yield
-    
-    # Stop the scheduler
-    await scheduler.stop()
-    
-    # Stop the Telegram bot
-    await bot_service.stop()
+    try:
+        # Start the scheduler
+        scheduler.start()
+        
+        # Start the Telegram bot in the background
+        bot_task = asyncio.create_task(bot_service.start())
+        
+        yield
+        
+        # Stop the scheduler
+        await scheduler.stop()
+        
+        # Stop the Telegram bot
+        await bot_service.stop()
+        if not bot_task.done():
+            bot_task.cancel()
+            try:
+                await bot_task
+            except asyncio.CancelledError:
+                pass
+    except Exception as e:
+        logger.error(f"Error in lifespan context: {e}")
+        raise
 
 app.router.lifespan_context = lifespan
 
