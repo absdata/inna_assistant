@@ -21,7 +21,7 @@ class AgentState(BaseModel):
     plan: str = Field(default="")
     response: str = Field(default="")
 
-async def retrieve_context(state: AgentState) -> Tuple[AgentState, str]:
+async def retrieve_context(state: AgentState) -> AgentState:
     """Node 1: Retrieve relevant context from vector store."""
     try:
         # Get embedding for the current message
@@ -35,12 +35,12 @@ async def retrieve_context(state: AgentState) -> Tuple[AgentState, str]:
         )
         
         state.context = similar_messages
-        return state, "router"
+        return state
     except Exception as e:
         logger.error(f"Error in retrieve_context: {str(e)}", exc_info=True)
-        return state, "router"
+        return state
 
-async def create_plan(state: AgentState) -> Tuple[AgentState, str]:
+async def create_plan(state: AgentState) -> AgentState:
     """Node 2: Create a plan for responding to the message."""
     try:
         context_text = "\n".join([
@@ -57,12 +57,12 @@ async def create_plan(state: AgentState) -> Tuple[AgentState, str]:
         ]
         
         state.plan = await openai_service.get_completion(messages, temperature=0.7)
-        return state, "router"
+        return state
     except Exception as e:
         logger.error(f"Error in create_plan: {str(e)}", exc_info=True)
-        return state, "router"
+        return state
 
-async def generate_response(state: AgentState) -> Tuple[AgentState, str]:
+async def generate_response(state: AgentState) -> AgentState:
     """Node 3: Generate the final response."""
     try:
         context_text = "\n".join([
@@ -79,13 +79,13 @@ async def generate_response(state: AgentState) -> Tuple[AgentState, str]:
         ]
         
         state.response = await openai_service.get_completion(messages, temperature=0.7)
-        return state, "router"
+        return state
     except Exception as e:
         logger.error(f"Error in generate_response: {str(e)}", exc_info=True)
-        return state, "router"
+        return state
 
-def router(state: AgentState) -> str:
-    """Route to the next node based on state."""
+def get_next_step(state: AgentState) -> str:
+    """Determine the next step based on state."""
     if not state.context:
         return END
     if not state.plan:
@@ -104,23 +104,10 @@ def create_agent() -> Graph:
     workflow.add_node("create_plan", create_plan)
     workflow.add_node("generate_response", generate_response)
     
-    # Add conditional routing
-    workflow.add_node("router", router)
-    
-    # Add edges
-    workflow.add_edge("retrieve_context", "router")
-    workflow.add_edge("create_plan", "router")
-    workflow.add_edge("generate_response", "router")
-    
-    # Define the conditional edges from router
-    workflow.add_conditional_edges(
-        "router",
-        {
-            "create_plan": lambda x: not x.plan,
-            "generate_response": lambda x: not x.response and x.plan,
-            END: lambda x: x.response or not x.context
-        }
-    )
+    # Add edges with conditional routing
+    workflow.add_edge("retrieve_context", get_next_step)
+    workflow.add_edge("create_plan", get_next_step)
+    workflow.add_edge("generate_response", get_next_step)
     
     # Set entry point
     workflow.set_entry_point("retrieve_context")
