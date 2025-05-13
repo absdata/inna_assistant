@@ -27,6 +27,7 @@ class TelegramBotService:
         self.application = Application.builder().token(config.telegram_token).build()
         self._setup_handlers()
         self._running = False
+        self._shutdown_event = asyncio.Event()
         logger.info("Telegram bot service initialized successfully")
     
     def _setup_handlers(self):
@@ -190,7 +191,8 @@ class TelegramBotService:
                     "current_message": saved_message,
                     "chat_id": chat_id,
                     "plan": "",
-                    "response": ""
+                    "response": "",
+                    "formatted_context": ""
                 }
                 
                 # Run the agent workflow
@@ -234,15 +236,21 @@ class TelegramBotService:
             await self.application.start()
             logger.info("Starting message polling...")
             self._running = True
+            self._shutdown_event.clear()
             
             # Use update polling instead of run_polling
             async with self.application:
-                await self.application.updater.start_polling()
+                await self.application.updater.start_polling(
+                    poll_interval=1.0,
+                    timeout=30,
+                    bootstrap_retries=-1,
+                    read_timeout=30,
+                    write_timeout=30
+                )
                 logger.info("Telegram bot is now polling for updates")
                 
-                # Keep the polling running
-                while self._running:
-                    await asyncio.sleep(1)
+                # Keep the polling running until shutdown event is set
+                await self._shutdown_event.wait()
                     
         except Exception as e:
             self._running = False
@@ -258,9 +266,20 @@ class TelegramBotService:
         logger.info("Stopping Telegram bot...")
         try:
             self._running = False
+            self._shutdown_event.set()
+            
+            # Stop the updater first
             if self.application.updater and self.application.updater.running:
+                logger.debug("Stopping updater...")
                 await self.application.updater.stop()
+            
+            # Stop the application
+            logger.debug("Stopping application...")
             await self.application.stop()
+            
+            # Wait a moment to ensure all connections are closed
+            await asyncio.sleep(0.5)
+            
             logger.info("Telegram bot stopped successfully")
         except Exception as e:
             logger.error(f"Error stopping Telegram bot: {str(e)}", exc_info=True)

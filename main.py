@@ -43,6 +43,7 @@ async def lifespan(app):
         logger.info("All services started successfully")
         yield
         
+        # Begin shutdown sequence
         logger.info("=== Beginning shutdown sequence ===")
         
         # Stop the scheduler
@@ -54,24 +55,26 @@ async def lifespan(app):
         logger.info("Stopping Telegram bot service...")
         await bot_service.stop()
         
-        # Wait for bot task to complete
+        # Wait for bot task to complete with timeout
         if not bot_task.done():
             logger.info("Waiting for bot task to complete...")
             try:
-                await asyncio.wait_for(bot_task, timeout=5.0)
+                await asyncio.wait_for(bot_task, timeout=10.0)
                 logger.info("Bot task completed successfully")
             except asyncio.TimeoutError:
                 logger.warning("Bot task timeout, forcing cancellation...")
                 bot_task.cancel()
                 try:
-                    await bot_task
-                except asyncio.CancelledError:
-                    logger.info("Bot task cancelled")
+                    await asyncio.wait_for(bot_task, timeout=2.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    logger.warning("Bot task cancelled")
         
         logger.info("All services stopped successfully")
         
     except Exception as e:
         logger.error(f"Critical error in lifespan context: {str(e)}", exc_info=True)
+        # Ensure we attempt to stop services even if there was an error
+        await shutdown(None)
         raise
 
 app.router.lifespan_context = lifespan
@@ -82,7 +85,7 @@ async def main():
         app,
         host="0.0.0.0",
         port=8000,
-        log_level="debug",  # Change to debug for more detailed logs
+        log_level="debug",
         access_log=True
     )
     server = uvicorn.Server(config)
@@ -90,7 +93,7 @@ async def main():
     # Set up signal handlers for graceful shutdown
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, lambda: asyncio.create_task(shutdown(server)))
+        loop.add_signal_handler(sig, lambda s=server: asyncio.create_task(shutdown(s)))
         logger.info(f"Registered signal handler for {sig.name}")
     
     try:
@@ -100,21 +103,37 @@ async def main():
     except Exception as e:
         logger.error(f"Critical error running services: {str(e)}", exc_info=True)
         await shutdown(server)
+        raise
 
 async def shutdown(server):
-    """Gracefully shut down all services."""
+    """Graceful shutdown of all services."""
+    logger.info("=== Beginning shutdown sequence ===")
+    
+    # Stop the scheduler first
+    logger.info("Stopping scheduler service...")
     try:
-        logger.info("=== Beginning emergency shutdown ===")
-        logger.info("Shutting down web server...")
-        await server.shutdown()
-        logger.info("Web server shutdown complete")
+        await scheduler.stop()
+        logger.info("Scheduler service stopped successfully")
     except Exception as e:
-        logger.error(f"Error during emergency shutdown: {str(e)}", exc_info=True)
-    finally:
-        logger.info("Stopping event loop...")
-        loop = asyncio.get_running_loop()
-        loop.stop()
-        logger.info("Event loop stopped")
+        logger.error(f"Error stopping scheduler: {str(e)}", exc_info=True)
+    
+    # Stop the Telegram bot
+    logger.info("Stopping Telegram bot service...")
+    try:
+        await bot_service.stop()
+        logger.info("Telegram bot service stopped successfully")
+    except Exception as e:
+        logger.error(f"Error stopping Telegram bot: {str(e)}", exc_info=True)
+    
+    # Stop the server
+    logger.info("Stopping web server...")
+    try:
+        await server.shutdown()
+        logger.info("Web server stopped successfully")
+    except Exception as e:
+        logger.error(f"Error stopping web server: {str(e)}", exc_info=True)
+    
+    logger.info("=== Shutdown sequence completed ===")
 
 if __name__ == "__main__":
     try:
