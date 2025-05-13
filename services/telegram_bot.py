@@ -3,7 +3,7 @@
 import asyncio
 from typing import Optional, BinaryIO
 import tempfile
-from telegram import Update
+from telegram import Update, ParseMode
 from telegram.ext import (
     Application,
     ContextTypes,
@@ -203,7 +203,10 @@ class TelegramBotService:
                         logger.info("Sending response to user...")
                         for attempt in range(3):  # Try up to 3 times
                             try:
-                                await update.message.reply_text(result["response"])
+                                await update.message.reply_text(
+                                    result["response"],
+                                    parse_mode=ParseMode.MARKDOWN_V2
+                                )
                                 logger.debug(f"Response sent: {result['response'][:100]}{'...' if len(result['response']) > 100 else ''}")
                                 break
                             except Exception as reply_error:
