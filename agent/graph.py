@@ -1,6 +1,6 @@
 # LangGraph workflow definition
 
-from typing import Dict, List, Any, Tuple, Union, Annotated, TypeVar
+from typing import Dict, List, Any, Tuple, Union, Annotated, TypeVar, cast
 from langgraph.graph import Graph, END, StateGraph
 from langgraph.prebuilt import ToolExecutor
 import operator
@@ -24,64 +24,57 @@ class AgentState(BaseModel):
     def to_dict(self) -> Dict[str, Any]:
         """Convert state to dictionary format."""
         return {
-            "messages": list(self.messages),  # Create new list
-            "context": list(self.context),    # Create new list
-            "current_message": dict(self.current_message),  # Create new dict
+            "messages": list(self.messages),
+            "context": list(self.context),
+            "current_message": dict(self.current_message),
             "chat_id": self.chat_id,
             "plan": str(self.plan),
             "response": str(self.response)
         }
 
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "AgentState":
-        """Create state from dictionary."""
-        return cls(
-            messages=list(data.get("messages", [])),
-            context=list(data.get("context", [])),
-            current_message=dict(data.get("current_message", {})),
-            chat_id=int(data.get("chat_id", 0)),
-            plan=str(data.get("plan", "")),
-            response=str(data.get("response", ""))
-        )
+def ensure_dict_state(state: Union[Dict[str, Any], AgentState]) -> Dict[str, Any]:
+    """Ensure state is a dictionary."""
+    if isinstance(state, AgentState):
+        return state.to_dict()
+    return state
 
-def create_initial_state() -> Dict[str, Any]:
-    """Create initial state dictionary."""
-    return {
-        "messages": [],
-        "context": [],
-        "current_message": {},
-        "chat_id": 0,
-        "plan": "",
-        "response": ""
-    }
+def ensure_agent_state(state: Union[Dict[str, Any], AgentState]) -> AgentState:
+    """Ensure state is an AgentState object."""
+    if isinstance(state, dict):
+        return AgentState(**state)
+    return state
 
-async def retrieve_context(state: Dict[str, Any]) -> Dict[str, Any]:
+async def retrieve_context(state: Union[Dict[str, Any], AgentState]) -> Dict[str, Any]:
     """Node 1: Retrieve relevant context from vector store."""
     try:
+        # Convert to AgentState for type safety
+        state_obj = ensure_agent_state(state)
+        
         # Get embedding for the current message
-        query_text = state["current_message"].get("text", "")
+        query_text = state_obj.current_message.get("text", "")
         embedding = await openai_service.get_embedding(query_text)
         
         # Get similar messages
         similar_messages = await db_service.get_similar_messages(
             embedding=embedding,
-            chat_id=state["chat_id"]
+            chat_id=state_obj.chat_id
         )
         
-        # Return new state dictionary
-        return {
-            **state,
-            "context": similar_messages
-        }
+        # Update state
+        state_obj.context = similar_messages
+        return state_obj.to_dict()
     except Exception as e:
         logger.error(f"Error in retrieve_context: {str(e)}", exc_info=True)
-        return state
+        return ensure_dict_state(state)
 
-async def create_plan(state: Dict[str, Any]) -> Dict[str, Any]:
+async def create_plan(state: Union[Dict[str, Any], AgentState]) -> Dict[str, Any]:
     """Node 2: Create a plan for responding to the message."""
     try:
+        # Convert to AgentState for type safety
+        state_obj = ensure_agent_state(state)
+        
         context_text = "\n".join([
-            f"- {msg['text']}" for msg in state["context"]
+            f"- {msg['text']}" for msg in state_obj.context
         ])
         
         messages = [
@@ -89,26 +82,24 @@ async def create_plan(state: Dict[str, Any]) -> Dict[str, Any]:
                 "You are a planning agent. Create a brief plan for how to respond to the user's message using the available context."
             ),
             openai_service.create_user_message(
-                f"Context:\n{context_text}\n\nUser message: {state['current_message'].get('text', '')}\n\nCreate a plan:"
+                f"Context:\n{context_text}\n\nUser message: {state_obj.current_message.get('text', '')}\n\nCreate a plan:"
             )
         ]
         
-        plan = await openai_service.get_completion(messages, temperature=0.7)
-        
-        # Return new state dictionary
-        return {
-            **state,
-            "plan": plan
-        }
+        state_obj.plan = await openai_service.get_completion(messages, temperature=0.7)
+        return state_obj.to_dict()
     except Exception as e:
         logger.error(f"Error in create_plan: {str(e)}", exc_info=True)
-        return state
+        return ensure_dict_state(state)
 
-async def generate_response(state: Dict[str, Any]) -> Dict[str, Any]:
+async def generate_response(state: Union[Dict[str, Any], AgentState]) -> Dict[str, Any]:
     """Node 3: Generate the final response."""
     try:
+        # Convert to AgentState for type safety
+        state_obj = ensure_agent_state(state)
+        
         context_text = "\n".join([
-            f"- {msg['text']}" for msg in state["context"]
+            f"- {msg['text']}" for msg in state_obj.context
         ])
         
         messages = [
@@ -116,28 +107,26 @@ async def generate_response(state: Dict[str, Any]) -> Dict[str, Any]:
                 "You are Inna, a helpful and smart startup co-founder. Respond in a clear, professional manner."
             ),
             openai_service.create_user_message(
-                f"Context:\n{context_text}\n\nPlan:\n{state['plan']}\n\nUser message: {state['current_message'].get('text', '')}\n\nRespond:"
+                f"Context:\n{context_text}\n\nPlan:\n{state_obj.plan}\n\nUser message: {state_obj.current_message.get('text', '')}\n\nRespond:"
             )
         ]
         
-        response = await openai_service.get_completion(messages, temperature=0.7)
-        
-        # Return new state dictionary
-        return {
-            **state,
-            "response": response
-        }
+        state_obj.response = await openai_service.get_completion(messages, temperature=0.7)
+        return state_obj.to_dict()
     except Exception as e:
         logger.error(f"Error in generate_response: {str(e)}", exc_info=True)
-        return state
+        return ensure_dict_state(state)
 
-def get_next_step(state: Dict[str, Any]) -> str:
+def get_next_step(state: Union[Dict[str, Any], AgentState]) -> str:
     """Determine the next step in the workflow."""
-    if not state["context"]:
+    # Convert to AgentState for type safety
+    state_obj = ensure_agent_state(state)
+    
+    if not state_obj.context:
         return "end"
-    if not state["plan"]:
+    if not state_obj.plan:
         return "create_plan"
-    if not state["response"]:
+    if not state_obj.response:
         return "generate_response"
     return "end"
 
