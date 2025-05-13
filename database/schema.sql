@@ -36,7 +36,7 @@ create table if not exists inna_message_embeddings (
     message_id bigint references inna_messages(id) on delete cascade,
     chat_id bigint not null,
     text text not null,
-    embedding vector(1536) not null,
+    embedding vector(2000) not null,
     chunk_index int,  -- NULL for regular messages, index number for file chunks
     created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
@@ -53,7 +53,7 @@ create table if not exists inna_tasks (
     status text not null default 'pending',
     priority int not null default 1,
     due_date timestamp with time zone,
-    embedding vector(1536),
+    embedding vector(2000),
     metadata jsonb default '{}'::jsonb,
     created_at timestamp with time zone default timezone('utc'::text, now()) not null,
     updated_at timestamp with time zone default timezone('utc'::text, now()) not null
@@ -64,7 +64,7 @@ create table if not exists inna_summaries (
     id bigint primary key generated always as identity,
     chat_id bigint not null,
     summary text not null,
-    embedding vector(1536),
+    embedding vector(2000),
     metadata jsonb default '{}'::jsonb,
     created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
@@ -75,7 +75,7 @@ create table if not exists inna_agent_memory (
     chat_id bigint not null,
     agent_role text not null,
     context text not null,
-    embedding vector(1536) not null,
+    embedding vector(2000) not null,
     relevance_score float not null default 1.0,
     metadata jsonb default '{}'::jsonb,
     created_at timestamp with time zone default timezone('utc'::text, now()) not null
@@ -109,7 +109,7 @@ create index if not exists inna_agent_memory_created_at_idx on inna_agent_memory
 
 -- Function to match similar messages based on embedding
 create or replace function match_messages(
-    query_embedding vector(1536),
+    query_embedding vector(2000),
     match_threshold float,
     match_count int
 )
@@ -136,7 +136,7 @@ $$;
 
 -- Function to match agent memories with time filtering
 create or replace function match_agent_memories(
-    query_embedding vector(1536),
+    query_embedding vector(2000),
     agent_role text,
     match_threshold float,
     match_count int,

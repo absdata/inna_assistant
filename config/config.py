@@ -31,7 +31,8 @@ class Config:
         
         # Application Configuration
         self.max_context_messages: int = int(self._get_env("MAX_CONTEXT_MESSAGES", "5"))
-        self.embedding_dimension: int = 1536  # Azure OpenAI text-embedding-ada-002 dimension
+        self.source_embedding_dimension: int = 3072  # text-embedding-3-large dimension
+        self.target_embedding_dimension: int = 2000  # Supabase pgvector limit
         self.debug_mode: bool = self._get_env("DEBUG_MODE", "false").lower() == "true"
         self.log_level: str = self._get_env("LOG_LEVEL", "INFO")
 
