@@ -17,6 +17,19 @@ create table if not exists inna_messages (
     unique(chat_id, message_id)
 );
 
+-- File chunks table for large files
+create table if not exists inna_file_chunks (
+    id bigint primary key generated always as identity,
+    message_id bigint references inna_messages(id) on delete cascade,
+    chunk_index int not null,
+    chunk_content text not null,
+    created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+    unique(message_id, chunk_index)
+);
+
+-- Create index for faster chunk retrieval
+create index if not exists inna_file_chunks_message_id_idx on inna_file_chunks(message_id);
+
 -- Message embeddings table with vector search capability
 create table if not exists inna_message_embeddings (
     id bigint primary key generated always as identity,

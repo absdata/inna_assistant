@@ -105,12 +105,8 @@ class TelegramBotService:
                         temp_file,
                         update.message.document.file_name
                     )
-                    if file_content:
-                        logger.info("File content extracted successfully")
-                    else:
-                        logger.warning("Failed to extract file content")
             
-            # Save message to database
+            # Save basic message first without file content
             logger.debug("Saving message to database...")
             saved_message = await db_service.save_message(
                 chat_id=chat_id,
@@ -118,28 +114,56 @@ class TelegramBotService:
                 user_id=user_id,
                 username=username,
                 text=text,
-                file_url=file_url,
-                file_content=file_content
+                file_url=file_url
             )
+            
+            if not saved_message:
+                logger.error("Failed to save message")
+                return
+            
             logger.info(f"Message saved to database with ID: {saved_message['id']}")
             
-            # Generate and save embedding
-            if text or file_content:
-                logger.debug("Generating embedding for message content...")
-                content_to_embed = (text + "\n" + (file_content or "")).strip()
-                try:
-                    embedding = await openai_service.get_embedding(content_to_embed)
-                    
-                    await db_service.save_embedding(
-                        message_id=saved_message["id"],
-                        chat_id=chat_id,
-                        text=content_to_embed,
-                        embedding=embedding
-                    )
-                    logger.info("Message embedding saved to database")
-                except Exception as embed_error:
-                    logger.error(f"Error generating or saving embedding: {str(embed_error)}", exc_info=True)
-                    # Continue processing even if embedding fails
+            # If we have file content, save it in chunks
+            if file_content:
+                logger.info("Saving file content in chunks...")
+                await db_service.save_file_chunks(
+                    message_id=saved_message["id"],
+                    content=file_content
+                )
+                
+                # Generate embeddings for each chunk
+                logger.debug("Generating embeddings for file content chunks...")
+                chunk_size = 100000  # Same as in save_file_chunks
+                for i in range(0, len(file_content), chunk_size):
+                    chunk = file_content[i:i + chunk_size]
+                    content_to_embed = (text + "\n" + chunk).strip()
+                    try:
+                        embedding = await openai_service.get_embedding(content_to_embed)
+                        await db_service.save_embedding(
+                            message_id=saved_message["id"],
+                            chat_id=chat_id,
+                            text=content_to_embed,
+                            embedding=embedding
+                        )
+                        logger.info(f"Saved embedding for chunk {i // chunk_size + 1}")
+                    except Exception as embed_error:
+                        logger.error(f"Error processing chunk {i // chunk_size + 1}: {str(embed_error)}", exc_info=True)
+                        continue
+            else:
+                # Generate embedding for text-only message
+                if text:
+                    logger.debug("Generating embedding for message text...")
+                    try:
+                        embedding = await openai_service.get_embedding(text)
+                        await db_service.save_embedding(
+                            message_id=saved_message["id"],
+                            chat_id=chat_id,
+                            text=text,
+                            embedding=embedding
+                        )
+                        logger.info("Message embedding saved to database")
+                    except Exception as embed_error:
+                        logger.error(f"Error generating or saving embedding: {str(embed_error)}", exc_info=True)
             
             # Check if message is addressed to Inna
             should_respond = any(
@@ -181,34 +205,10 @@ class TelegramBotService:
                         logger.warning("Agent workflow completed but no response generated")
                 except Exception as e:
                     logger.error(f"Error in agent workflow: {str(e)}", exc_info=True)
-                    for attempt in range(3):  # Try up to 3 times
-                        try:
-                            error_message = "I apologize, but I encountered an error while processing your request."
-                            await update.message.reply_text(error_message)
-                            break
-                        except Exception as reply_error:
-                            if attempt == 2:  # Last attempt
-                                logger.error(f"Failed to send error message after 3 attempts: {str(reply_error)}", exc_info=True)
-                            else:
-                                logger.warning(f"Failed to send error message (attempt {attempt + 1}), retrying...")
-                                await asyncio.sleep(1)  # Wait before retry
-            else:
-                logger.debug("Message not addressed to Inna, ignoring")
-                
+                    raise
         except Exception as e:
-            logger.error(f"Error processing message: {str(e)}", exc_info=True)
-            for attempt in range(3):  # Try up to 3 times
-                try:
-                    await update.message.reply_text(
-                        "I encountered an error while processing your message. Please try again later."
-                    )
-                    break
-                except Exception as reply_error:
-                    if attempt == 2:  # Last attempt
-                        logger.error(f"Failed to send error message after 3 attempts: {str(reply_error)}", exc_info=True)
-                    else:
-                        logger.warning(f"Failed to send error message (attempt {attempt + 1}), retrying...")
-                        await asyncio.sleep(1)  # Wait before retry
+            logger.error(f"Error handling message: {str(e)}", exc_info=True)
+            raise
     
     async def start(self):
         """Start the Telegram bot."""

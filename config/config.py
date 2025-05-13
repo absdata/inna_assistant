@@ -1,6 +1,16 @@
 from dotenv import load_dotenv
 import os
 from typing import Optional
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler()  # Output to console
+    ]
+)
 
 class Config:
     def __init__(self):

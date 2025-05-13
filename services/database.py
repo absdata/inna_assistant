@@ -73,6 +73,68 @@ class DatabaseService:
             logger.error(f"Error saving message: {str(e)}", exc_info=True)
             raise
 
+    async def save_file_chunks(
+        self,
+        message_id: int,
+        content: str,
+        chunk_size: int = 100000  # Default chunk size ~100KB of text
+    ) -> List[Dict[str, Any]]:
+        """Save file content in chunks."""
+        logger.info(f"Saving file content in chunks for message {message_id}")
+        chunks = []
+        
+        # Split content into chunks
+        for i in range(0, len(content), chunk_size):
+            chunk_data = {
+                "message_id": message_id,
+                "chunk_index": i // chunk_size,
+                "chunk_content": content[i:i + chunk_size]
+            }
+            chunks.append(chunk_data)
+        
+        try:
+            # Save all chunks
+            self._log_query("INSERT", "inna_file_chunks", {"chunk_count": len(chunks)})
+            result = self.client.table("inna_file_chunks").insert(chunks).execute()
+            self._log_result("INSERT", result)
+            
+            if result.data:
+                logger.info(f"Saved {len(result.data)} chunks for message {message_id}")
+                return result.data
+            else:
+                logger.error("Failed to save file chunks: no data returned")
+                return []
+        except Exception as e:
+            logger.error(f"Error saving file chunks: {str(e)}", exc_info=True)
+            raise
+
+    async def get_file_content(
+        self,
+        message_id: int
+    ) -> Optional[str]:
+        """Retrieve complete file content from chunks."""
+        logger.info(f"Retrieving file content for message {message_id}")
+        try:
+            # Get all chunks for the message, ordered by chunk_index
+            result = self.client.table("inna_file_chunks")\
+                .select("*")\
+                .eq("message_id", message_id)\
+                .order("chunk_index")\
+                .execute()
+            
+            if not result.data:
+                logger.info(f"No chunks found for message {message_id}")
+                return None
+            
+            # Combine chunks in order
+            content = "".join(chunk["chunk_content"] for chunk in result.data)
+            logger.info(f"Retrieved {len(result.data)} chunks for message {message_id}")
+            return content
+            
+        except Exception as e:
+            logger.error(f"Error retrieving file chunks: {str(e)}", exc_info=True)
+            raise
+
     async def save_embedding(
         self,
         message_id: int,
@@ -417,7 +479,13 @@ class DatabaseService:
                 filtered_messages = []
                 for msg in result.data:
                     text_content = (msg.get("text") or "").lower()
-                    file_content = (msg.get("file_content") or "").lower()
+                    
+                    # Get file content from chunks if available
+                    file_content = await self.get_file_content(msg["id"])
+                    if file_content:
+                        file_content = file_content.lower()
+                    else:
+                        file_content = ""
                     
                     if text_lower in text_content or text_lower in file_content:
                         similarity = next(
@@ -425,12 +493,13 @@ class DatabaseService:
                             0.0
                         )
                         msg["similarity"] = similarity
+                        msg["file_content"] = file_content  # Add the complete file content
                         filtered_messages.append(msg)
                         logger.debug(
                             f"Match found:\n"
                             f"ID: {msg['id']}\n"
                             f"Similarity: {similarity}\n"
-                            f"Has file content: {'Yes' if msg.get('file_content') else 'No'}"
+                            f"Has file content: {'Yes' if file_content else 'No'}"
                         )
                 
                 filtered_messages.sort(key=lambda x: x["similarity"], reverse=True)
@@ -453,7 +522,7 @@ class DatabaseService:
                 
                 self._log_result("Full Message Retrieval", result)
                 
-                # Add similarity scores
+                # Add similarity scores and get file content
                 full_messages = []
                 for msg in result.data:
                     similarity = next(
@@ -461,12 +530,18 @@ class DatabaseService:
                         0.0
                     )
                     msg["similarity"] = similarity
+                    
+                    # Get file content from chunks if available
+                    file_content = await self.get_file_content(msg["id"])
+                    if file_content:
+                        msg["file_content"] = file_content
+                    
                     full_messages.append(msg)
                     logger.debug(
                         f"Processing message:\n"
                         f"ID: {msg['id']}\n"
                         f"Similarity: {similarity}\n"
-                        f"Has file content: {'Yes' if msg.get('file_content') else 'No'}"
+                        f"Has file content: {'Yes' if file_content else 'No'}"
                     )
                 
                 full_messages.sort(key=lambda x: x["similarity"], reverse=True)
