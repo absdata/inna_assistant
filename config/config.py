@@ -40,7 +40,7 @@ class Config:
         self.google_service_account_key: str = self._get_env("GOOGLE_SERVICE_ACCOUNT_KEY")
         
         # Agent Configuration
-        self.agent_name_triggers = ["inna,", "ina,", "inna"]
+        self.agent_name_triggers = ["inna,", "ina,", "inna", "инна"]
     
     def _setup_logging(self) -> None:
         """Configure logging for the application."""
