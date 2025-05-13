@@ -21,13 +21,8 @@ class DatabaseService:
     def _setup_database(self):
         """Set up database tables and functions."""
         try:
-            # Enable pgvector extension if not already enabled
-            self.client.table("extensions").insert({
-                "name": "vector",
-                "schema": "public",
-                "version": "0.4.0"  # or whatever version you're using
-            }).execute()
-            logger.info("Vector extension enabled")
+            # Note: pgvector extension should be enabled via Supabase dashboard or migrations
+            logger.info("Setting up database functions...")
             
             # Set up database functions
             self._execute_sql_sync("DROP FUNCTION IF EXISTS match_messages(vector, float, int);")
@@ -45,9 +40,9 @@ class DatabaseService:
     def _execute_sql_sync(self, sql: str):
         """Execute raw SQL using Supabase synchronously."""
         try:
-            # For now, we'll just log the SQL as Supabase REST API doesn't support direct SQL execution
-            logger.debug(f"Would execute SQL: {sql}")
-            # In production, this would be handled by Supabase's serverless functions or direct DB access
+            # For now, we'll just log the SQL that would be executed
+            # These operations should be performed via migrations or the Supabase dashboard
+            logger.info(f"SQL to be executed via migration or dashboard:\n{sql}")
             return None
         except Exception as e:
             logger.error(f"Error executing SQL: {str(e)}", exc_info=True)
@@ -56,7 +51,7 @@ class DatabaseService:
     def _get_match_messages_function_sql(self) -> str:
         """Get SQL for creating match_messages function."""
         return """
-        create function match_messages(
+        create or replace function match_messages(
             query_embedding vector(2000),
             match_threshold float,
             match_count int
@@ -68,18 +63,21 @@ class DatabaseService:
             chunk_index int,
             similarity float
         )
-        language sql stable
+        language plpgsql
         as $$
-            select
-                inna_message_embeddings.id,
-                inna_message_embeddings.chat_id,
-                inna_message_embeddings.text,
-                inna_message_embeddings.chunk_index,
-                1 - (inna_message_embeddings.embedding <=> query_embedding) as similarity
-            from inna_message_embeddings
-            where 1 - (inna_message_embeddings.embedding <=> query_embedding) > match_threshold
-            order by inna_message_embeddings.embedding <=> query_embedding
-            limit match_count;
+        begin
+            return query
+                select
+                    inna_message_embeddings.id,
+                    inna_message_embeddings.chat_id,
+                    inna_message_embeddings.text,
+                    inna_message_embeddings.chunk_index,
+                    1 - (inna_message_embeddings.embedding <=> query_embedding) as similarity
+                from inna_message_embeddings
+                where 1 - (inna_message_embeddings.embedding <=> query_embedding) > match_threshold
+                order by inna_message_embeddings.embedding <=> query_embedding
+                limit match_count;
+        end;
         $$;
         """
 
@@ -93,7 +91,7 @@ class DatabaseService:
     def _get_match_agent_memories_function_sql(self) -> str:
         """Get SQL for creating match_agent_memories function."""
         return """
-        create function match_agent_memories(
+        create or replace function match_agent_memories(
             query_embedding vector(2000),
             agent_role text,
             match_threshold float,
@@ -108,22 +106,25 @@ class DatabaseService:
             metadata jsonb,
             similarity float
         )
-        language sql stable
+        language plpgsql
         as $$
-            select
-                inna_agent_memory.id,
-                inna_agent_memory.chat_id,
-                inna_agent_memory.context,
-                inna_agent_memory.metadata,
-                1 - (inna_agent_memory.embedding <=> query_embedding) as similarity
-            from inna_agent_memory
-            where 
-                (agent_role is null or inna_agent_memory.agent_role = agent_role)
-                and 1 - (inna_agent_memory.embedding <=> query_embedding) > match_threshold
-                and (start_time is null or inna_agent_memory.created_at >= start_time)
-                and (end_time is null or inna_agent_memory.created_at <= end_time)
-            order by inna_agent_memory.embedding <=> query_embedding
-            limit match_count;
+        begin
+            return query
+                select
+                    inna_agent_memory.id,
+                    inna_agent_memory.chat_id,
+                    inna_agent_memory.context,
+                    inna_agent_memory.metadata,
+                    1 - (inna_agent_memory.embedding <=> query_embedding) as similarity
+                from inna_agent_memory
+                where 
+                    (agent_role is null or inna_agent_memory.agent_role = agent_role)
+                    and 1 - (inna_agent_memory.embedding <=> query_embedding) > match_threshold
+                    and (start_time is null or inna_agent_memory.created_at >= start_time)
+                    and (end_time is null or inna_agent_memory.created_at <= end_time)
+                order by inna_agent_memory.embedding <=> query_embedding
+                limit match_count;
+        end;
         $$;
         """
 
