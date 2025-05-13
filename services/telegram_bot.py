@@ -89,27 +89,27 @@ class TelegramBotService:
         file_url = None
         file_content = None
         
-        # Handle file attachments
-        if update.message.document:
-            file = await update.message.document.get_file()
-            file_url = file.file_path
-            logger.info(f"Processing attached file: {update.message.document.file_name}")
-            
-            # Download and process file content
-            with tempfile.NamedTemporaryFile() as temp_file:
-                logger.debug("Downloading file to temporary location...")
-                await file.download_to_memory(temp_file)
-                temp_file.seek(0)
-                file_content = await self._extract_text_from_file(
-                    temp_file,
-                    update.message.document.file_name
-                )
-                if file_content:
-                    logger.info("File content extracted successfully")
-                else:
-                    logger.warning("Failed to extract file content")
-        
         try:
+            # Handle file attachments
+            if update.message.document:
+                file = await update.message.document.get_file()
+                file_url = file.file_path
+                logger.info(f"Processing attached file: {update.message.document.file_name}")
+                
+                # Download and process file content
+                with tempfile.NamedTemporaryFile() as temp_file:
+                    logger.debug("Downloading file to temporary location...")
+                    await file.download_to_memory(temp_file)
+                    temp_file.seek(0)
+                    file_content = await self._extract_text_from_file(
+                        temp_file,
+                        update.message.document.file_name
+                    )
+                    if file_content:
+                        logger.info("File content extracted successfully")
+                    else:
+                        logger.warning("Failed to extract file content")
+            
             # Save message to database
             logger.debug("Saving message to database...")
             saved_message = await db_service.save_message(
@@ -127,15 +127,19 @@ class TelegramBotService:
             if text or file_content:
                 logger.debug("Generating embedding for message content...")
                 content_to_embed = (text + "\n" + (file_content or "")).strip()
-                embedding = await openai_service.get_embedding(content_to_embed)
-                
-                await db_service.save_embedding(
-                    message_id=saved_message["id"],
-                    chat_id=chat_id,
-                    text=content_to_embed,
-                    embedding=embedding
-                )
-                logger.info("Message embedding saved to database")
+                try:
+                    embedding = await openai_service.get_embedding(content_to_embed)
+                    
+                    await db_service.save_embedding(
+                        message_id=saved_message["id"],
+                        chat_id=chat_id,
+                        text=content_to_embed,
+                        embedding=embedding
+                    )
+                    logger.info("Message embedding saved to database")
+                except Exception as embed_error:
+                    logger.error(f"Error generating or saving embedding: {str(embed_error)}", exc_info=True)
+                    # Continue processing even if embedding fails
             
             # Check if message is addressed to Inna
             should_respond = any(
@@ -157,25 +161,50 @@ class TelegramBotService:
                     result = await agent.ainvoke(state)
                     if result.response:
                         logger.info("Sending response to user...")
-                        await update.message.reply_text(result.response)
-                        logger.debug(f"Response sent: {result.response[:100]}{'...' if len(result.response) > 100 else ''}")
+                        for attempt in range(3):  # Try up to 3 times
+                            try:
+                                await update.message.reply_text(result.response)
+                                logger.debug(f"Response sent: {result.response[:100]}{'...' if len(result.response) > 100 else ''}")
+                                break
+                            except Exception as reply_error:
+                                if attempt == 2:  # Last attempt
+                                    logger.error(f"Failed to send response after 3 attempts: {str(reply_error)}", exc_info=True)
+                                    raise
+                                else:
+                                    logger.warning(f"Failed to send response (attempt {attempt + 1}), retrying...")
+                                    await asyncio.sleep(1)  # Wait before retry
                     else:
                         logger.warning("Agent workflow completed but no response generated")
                 except Exception as e:
                     logger.error(f"Error in agent workflow: {str(e)}", exc_info=True)
-                    error_message = "I apologize, but I encountered an error while processing your request."
-                    await update.message.reply_text(error_message)
+                    for attempt in range(3):  # Try up to 3 times
+                        try:
+                            error_message = "I apologize, but I encountered an error while processing your request."
+                            await update.message.reply_text(error_message)
+                            break
+                        except Exception as reply_error:
+                            if attempt == 2:  # Last attempt
+                                logger.error(f"Failed to send error message after 3 attempts: {str(reply_error)}", exc_info=True)
+                            else:
+                                logger.warning(f"Failed to send error message (attempt {attempt + 1}), retrying...")
+                                await asyncio.sleep(1)  # Wait before retry
             else:
                 logger.debug("Message not addressed to Inna, ignoring")
                 
         except Exception as e:
             logger.error(f"Error processing message: {str(e)}", exc_info=True)
-            try:
-                await update.message.reply_text(
-                    "I encountered an error while processing your message. Please try again later."
-                )
-            except Exception as reply_error:
-                logger.error(f"Error sending error message: {str(reply_error)}", exc_info=True)
+            for attempt in range(3):  # Try up to 3 times
+                try:
+                    await update.message.reply_text(
+                        "I encountered an error while processing your message. Please try again later."
+                    )
+                    break
+                except Exception as reply_error:
+                    if attempt == 2:  # Last attempt
+                        logger.error(f"Failed to send error message after 3 attempts: {str(reply_error)}", exc_info=True)
+                    else:
+                        logger.warning(f"Failed to send error message (attempt {attempt + 1}), retrying...")
+                        await asyncio.sleep(1)  # Wait before retry
     
     async def start(self):
         """Start the Telegram bot."""
