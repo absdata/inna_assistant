@@ -22,7 +22,10 @@ class DatabaseService:
         """Set up database tables and functions."""
         try:
             # Enable pgvector extension if not already enabled
-            self.client.query("create extension if not exists vector").execute()
+            self.client.table("_").rpc(
+                "exec",
+                {"query": "create extension if not exists vector;"}
+            ).execute()
             logger.info("Vector extension enabled")
             
             # Set up database functions
@@ -464,38 +467,46 @@ class DatabaseService:
 
     async def setup_match_messages_function(self):
         """Set up or update the match_messages database function."""
-        function_sql = """
-        create or replace function match_messages(
-            query_embedding vector(2000),
-            match_threshold float,
-            match_count int
-        )
-        returns table (
-            id bigint,
-            chat_id bigint,
-            text text,
-            chunk_index int,
-            similarity float
-        )
-        language sql stable
-        as $$
-            select
-                inna_message_embeddings.id,
-                inna_message_embeddings.chat_id,
-                inna_message_embeddings.text,
-                inna_message_embeddings.chunk_index,
-                1 - (inna_message_embeddings.embedding <=> query_embedding) as similarity
-            from inna_message_embeddings
-            where 1 - (inna_message_embeddings.embedding <=> query_embedding) > match_threshold
-            order by inna_message_embeddings.embedding <=> query_embedding
-            limit match_count;
-        $$;
-        """
         try:
-            await self.client.rpc("match_messages", {}).execute()
-        except Exception:
-            # Function doesn't exist or needs updating
-            self.client.query(function_sql).execute()
+            # Drop existing function first
+            self.client.table("_").rpc(
+                "exec",
+                {"query": "DROP FUNCTION IF EXISTS match_messages(vector, float, int);"}
+            ).execute()
+            
+            # Create new function
+            function_sql = """
+            create function match_messages(
+                query_embedding vector(2000),
+                match_threshold float,
+                match_count int
+            )
+            returns table (
+                id bigint,
+                chat_id bigint,
+                text text,
+                chunk_index int,
+                similarity float
+            )
+            language sql stable
+            as $$
+                select
+                    inna_message_embeddings.id,
+                    inna_message_embeddings.chat_id,
+                    inna_message_embeddings.text,
+                    inna_message_embeddings.chunk_index,
+                    1 - (inna_message_embeddings.embedding <=> query_embedding) as similarity
+                from inna_message_embeddings
+                where 1 - (inna_message_embeddings.embedding <=> query_embedding) > match_threshold
+                order by inna_message_embeddings.embedding <=> query_embedding
+                limit match_count;
+            $$;
+            """
+            self.client.table("_").rpc("exec", {"query": function_sql}).execute()
+            logger.info("Successfully created match_messages function")
+        except Exception as e:
+            logger.error(f"Error setting up match_messages function: {str(e)}", exc_info=True)
+            raise
 
     async def search_messages_with_content(
         self,
@@ -727,7 +738,7 @@ class DatabaseService:
             DROP FUNCTION IF EXISTS match_agent_memories(vector, text, float, int);
             DROP FUNCTION IF EXISTS match_agent_memories(vector, text, float, int, timestamp with time zone, timestamp with time zone);
             """
-            self.client.query(drop_sql).execute()
+            self.client.table("_").rpc("exec", {"query": drop_sql}).execute()
             logger.info("Dropped existing match_agent_memories functions")
 
             # Create the new function
@@ -765,7 +776,7 @@ class DatabaseService:
                 limit match_count;
             $$;
             """
-            self.client.query(function_sql).execute()
+            self.client.table("_").rpc("exec", {"query": function_sql}).execute()
             logger.info("Successfully created match_agent_memories function")
         except Exception as e:
             logger.error(f"Error setting up match_agent_memories function: {str(e)}", exc_info=True)
