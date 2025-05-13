@@ -26,6 +26,7 @@ class TelegramBotService:
         logger.info("Initializing Telegram bot service...")
         self.application = Application.builder().token(config.telegram_token).build()
         self._setup_handlers()
+        self._running = False
         logger.info("Telegram bot service initialized successfully")
     
     def _setup_handlers(self):
@@ -178,6 +179,10 @@ class TelegramBotService:
     
     async def start(self):
         """Start the Telegram bot."""
+        if self._running:
+            logger.warning("Telegram bot is already running")
+            return
+
         logger.info("Starting Telegram bot...")
         try:
             logger.debug("Initializing application...")
@@ -185,15 +190,33 @@ class TelegramBotService:
             logger.debug("Starting application...")
             await self.application.start()
             logger.info("Starting message polling...")
-            await self.application.run_polling()
+            self._running = True
+            
+            # Use update polling instead of run_polling
+            async with self.application:
+                await self.application.updater.start_polling()
+                logger.info("Telegram bot is now polling for updates")
+                
+                # Keep the polling running
+                while self._running:
+                    await asyncio.sleep(1)
+                    
         except Exception as e:
+            self._running = False
             logger.error(f"Error starting Telegram bot: {str(e)}", exc_info=True)
             raise
     
     async def stop(self):
         """Stop the Telegram bot."""
+        if not self._running:
+            logger.warning("Telegram bot is not running")
+            return
+
         logger.info("Stopping Telegram bot...")
         try:
+            self._running = False
+            if self.application.updater and self.application.updater.running:
+                await self.application.updater.stop()
             await self.application.stop()
             logger.info("Telegram bot stopped successfully")
         except Exception as e:

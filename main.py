@@ -53,15 +53,22 @@ async def lifespan(app):
         # Stop the Telegram bot
         logger.info("Stopping Telegram bot service...")
         await bot_service.stop()
+        
+        # Wait for bot task to complete
         if not bot_task.done():
-            logger.info("Cancelling remaining bot tasks...")
-            bot_task.cancel()
+            logger.info("Waiting for bot task to complete...")
             try:
-                await bot_task
-                logger.info("Bot tasks cancelled successfully")
-            except asyncio.CancelledError:
-                logger.info("Bot task cancellation completed")
-        logger.info("Telegram bot service stopped successfully")
+                await asyncio.wait_for(bot_task, timeout=5.0)
+                logger.info("Bot task completed successfully")
+            except asyncio.TimeoutError:
+                logger.warning("Bot task timeout, forcing cancellation...")
+                bot_task.cancel()
+                try:
+                    await bot_task
+                except asyncio.CancelledError:
+                    logger.info("Bot task cancelled")
+        
+        logger.info("All services stopped successfully")
         
     except Exception as e:
         logger.error(f"Critical error in lifespan context: {str(e)}", exc_info=True)
@@ -105,7 +112,8 @@ async def shutdown(server):
         logger.error(f"Error during emergency shutdown: {str(e)}", exc_info=True)
     finally:
         logger.info("Stopping event loop...")
-        asyncio.get_event_loop().stop()
+        loop = asyncio.get_running_loop()
+        loop.stop()
         logger.info("Event loop stopped")
 
 if __name__ == "__main__":
