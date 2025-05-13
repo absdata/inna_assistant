@@ -109,13 +109,20 @@ def create_agent() -> Graph:
     workflow.add_node("generate_response", generate_response)
     workflow.add_node("decide_next", decide_next)
     
-    # Add edges
+    # Add edges to decision node
     workflow.add_edge("retrieve_context", "decide_next")
     workflow.add_edge("create_plan", "decide_next")
     workflow.add_edge("generate_response", "decide_next")
-    workflow.add_edge("decide_next", "create_plan")
-    workflow.add_edge("decide_next", "generate_response")
-    workflow.add_edge("decide_next", END)
+    
+    # Add conditional edges from decision node
+    workflow.add_conditional_edges(
+        "decide_next",
+        {
+            "create_plan": lambda x: not x.plan and x.context,
+            "generate_response": lambda x: not x.response and x.plan,
+            END: lambda x: not x.context or x.response
+        }
+    )
     
     # Set entry point
     workflow.set_entry_point("retrieve_context")
