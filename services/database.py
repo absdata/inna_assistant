@@ -599,4 +599,104 @@ class DatabaseService:
             logger.error(f"Error searching messages: {str(e)}", exc_info=True)
             raise
 
+    async def save_agent_memory(
+        self,
+        role: str,
+        chat_id: int,
+        context: str,
+        embedding: List[float],
+        relevance_score: float = 1.0,
+        metadata: Dict[str, Any] = None
+    ) -> Dict[str, Any]:
+        """Save an agent memory to the database."""
+        memory_data = {
+            "agent_role": role,
+            "chat_id": chat_id,
+            "context": context,
+            "embedding": embedding,
+            "relevance_score": relevance_score,
+            "metadata": metadata or {}
+        }
+        
+        self._log_query("INSERT", "inna_agent_memory", memory_data)
+        
+        try:
+            result = self.client.table("inna_agent_memory").insert(memory_data).execute()
+            self._log_result("INSERT", result)
+            
+            if result.data:
+                logger.info(f"Memory saved successfully with ID: {result.data[0]['id']}")
+                return result.data[0]
+            else:
+                logger.error("Failed to save memory: no data returned")
+                return None
+        except Exception as e:
+            logger.error(f"Error saving memory: {str(e)}", exc_info=True)
+            raise
+
+    async def get_agent_memories(
+        self,
+        embedding: Optional[List[float]] = None,
+        role: Optional[str] = None,
+        chat_id: Optional[int] = None,
+        threshold: float = 0.3,
+        limit: int = 10,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """Get relevant agent memories."""
+        try:
+            if embedding:
+                # Use vector similarity search
+                result = self.client.rpc(
+                    "match_agent_memories",
+                    {
+                        "query_embedding": embedding,
+                        "agent_role": role,
+                        "match_threshold": threshold,
+                        "match_count": limit,
+                        "start_time": start_time.isoformat() if start_time else None,
+                        "end_time": end_time.isoformat() if end_time else None
+                    }
+                ).execute()
+            else:
+                # Use regular query
+                query = self.client.table("inna_agent_memory").select("*")
+                
+                if role:
+                    query = query.eq("agent_role", role)
+                if chat_id:
+                    query = query.eq("chat_id", chat_id)
+                if start_time:
+                    query = query.gte("created_at", start_time.isoformat())
+                if end_time:
+                    query = query.lte("created_at", end_time.isoformat())
+                
+                query = query.order("created_at", desc=True).limit(limit)
+                result = query.execute()
+            
+            self._log_result("SELECT", result)
+            return result.data if result.data else []
+            
+        except Exception as e:
+            logger.error(f"Error retrieving memories: {str(e)}", exc_info=True)
+            raise
+
+    async def update_memory_access(
+        self,
+        memory_id: int
+    ) -> None:
+        """Update last_accessed and access_count for a memory."""
+        try:
+            self.client.table("inna_agent_memory")\
+                .update({
+                    "last_accessed": datetime.utcnow().isoformat(),
+                    "access_count": self.client.raw("access_count + 1")
+                })\
+                .eq("id", memory_id)\
+                .execute()
+        except Exception as e:
+            logger.error(f"Error updating memory access: {str(e)}", exc_info=True)
+            # Don't raise the error as this is not critical
+
 db_service = DatabaseService() 

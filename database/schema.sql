@@ -74,12 +74,15 @@ create table if not exists inna_summaries (
 -- Agent memory for multi-agent system
 create table if not exists inna_agent_memory (
     id bigint primary key generated always as identity,
-    agent_role text not null, -- 'planner', 'doer', 'critic'
+    agent_role text not null, -- 'chat', 'document', 'summary', 'task'
     chat_id bigint not null,
     context text not null,
     embedding vector(2000) not null,
+    metadata jsonb default '{}',
+    relevance_score float not null default 1.0,
     created_at timestamp with time zone default timezone('utc'::text, now()) not null,
-    relevance_score float not null default 1.0
+    last_accessed timestamp with time zone default timezone('utc'::text, now()) not null,
+    access_count int default 0
 );
 
 -- Google Docs sync status
@@ -99,17 +102,14 @@ on inna_message_embeddings
 using ivfflat (embedding vector_cosine_ops)
 with (lists = 100);
 
-create index if not exists inna_agent_memory_embedding_idx 
-on inna_agent_memory 
-using ivfflat (embedding vector_cosine_ops)
-with (lists = 100);
-
 -- Create indexes for faster lookups
 create index if not exists inna_messages_chat_id_idx on inna_messages(chat_id);
 create index if not exists inna_message_embeddings_chat_id_idx on inna_message_embeddings(chat_id);
 create index if not exists inna_tasks_chat_id_idx on inna_tasks(chat_id);
 create index if not exists inna_summaries_chat_id_idx on inna_summaries(chat_id);
 create index if not exists inna_agent_memory_chat_id_idx on inna_agent_memory(chat_id);
+create index if not exists inna_agent_memory_role_idx on inna_agent_memory(agent_role);
+create index if not exists inna_agent_memory_created_at_idx on inna_agent_memory(created_at);
 
 -- Function to match similar messages based on embedding
 create or replace function match_messages(
@@ -138,17 +138,20 @@ as $$
     limit match_count;
 $$;
 
--- Function to match similar agent memories
+-- Function to match agent memories with time filtering
 create or replace function match_agent_memories(
     query_embedding vector(2000),
     agent_role text,
     match_threshold float,
-    match_count int
+    match_count int,
+    start_time timestamp with time zone default null,
+    end_time timestamp with time zone default null
 )
 returns table (
     id bigint,
     chat_id bigint,
     context text,
+    metadata jsonb,
     similarity float
 )
 language sql stable
@@ -157,11 +160,14 @@ as $$
         inna_agent_memory.id,
         inna_agent_memory.chat_id,
         inna_agent_memory.context,
+        inna_agent_memory.metadata,
         1 - (inna_agent_memory.embedding <=> query_embedding) as similarity
     from inna_agent_memory
     where 
-        inna_agent_memory.agent_role = agent_role
+        (agent_role is null or inna_agent_memory.agent_role = agent_role)
         and 1 - (inna_agent_memory.embedding <=> query_embedding) > match_threshold
+        and (start_time is null or inna_agent_memory.created_at >= start_time)
+        and (end_time is null or inna_agent_memory.created_at <= end_time)
     order by inna_agent_memory.embedding <=> query_embedding
     limit match_count;
 $$;
