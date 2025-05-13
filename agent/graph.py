@@ -1,6 +1,6 @@
 # LangGraph workflow definition
 
-from typing import Dict, List, Any, Tuple, Union, Annotated
+from typing import Dict, List, Any, Tuple, Union, Annotated, Callable
 from langgraph.graph import Graph, END
 from langgraph.prebuilt import ToolExecutor
 import operator
@@ -84,19 +84,24 @@ async def generate_response(state: AgentState) -> Tuple[AgentState, str]:
         logger.error(f"Error in generate_response: {str(e)}", exc_info=True)
         return state, "decide_next"
 
-def decide_next(state: AgentState) -> str:
+def decide_next(state: AgentState) -> Dict[str, Callable[[AgentState], bool]]:
     """Determine the next step based on state."""
-    if not state.context:
-        logger.debug("No context found, ending workflow")
-        return END
-    if not state.plan:
-        logger.debug("No plan yet, creating plan")
-        return "create_plan"
-    if not state.response:
-        logger.debug("No response yet, generating response")
-        return "generate_response"
-    logger.debug("Workflow complete, ending")
-    return END
+    logger.debug(f"Deciding next step. Context: {bool(state.context)}, Plan: {bool(state.plan)}, Response: {bool(state.response)}")
+    
+    def should_create_plan(state: AgentState) -> bool:
+        return bool(state.context) and not state.plan
+    
+    def should_generate_response(state: AgentState) -> bool:
+        return bool(state.plan) and not state.response
+    
+    def should_end(state: AgentState) -> bool:
+        return not state.context or bool(state.response)
+    
+    return {
+        "create_plan": should_create_plan,
+        "generate_response": should_generate_response,
+        END: should_end
+    }
 
 def create_agent() -> Graph:
     """Create the LangGraph agent workflow."""
@@ -117,11 +122,7 @@ def create_agent() -> Graph:
     # Add conditional edges from decision node
     workflow.add_conditional_edges(
         "decide_next",
-        {
-            "create_plan": lambda x: not x.plan and x.context,
-            "generate_response": lambda x: not x.response and x.plan,
-            END: lambda x: not x.context or x.response
-        }
+        decide_next
     )
     
     # Set entry point
