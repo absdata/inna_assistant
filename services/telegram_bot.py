@@ -31,6 +31,17 @@ class TelegramBotService:
         self._shutdown_event = asyncio.Event()
         logger.info("Telegram bot service initialized successfully")
     
+    def _escape_markdown_v2(self, text: str) -> str:
+        """Escape special characters for Telegram's MarkdownV2 format."""
+        # Characters that need escaping in MarkdownV2
+        special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+        
+        # Escape each special character with a backslash
+        for char in special_chars:
+            text = text.replace(char, f'\\{char}')
+        
+        return text
+    
     def _setup_handlers(self):
         """Set up message handlers."""
         logger.debug("Setting up message handlers...")
@@ -116,7 +127,8 @@ class TelegramBotService:
                 user_id=user_id,
                 username=username,
                 text=text,
-                file_url=file_url
+                file_url=file_url,
+                file_content=file_content
             )
             
             if not saved_message:
@@ -136,7 +148,7 @@ class TelegramBotService:
                 if saved_chunks:
                     # Generate embeddings for each chunk
                     logger.debug("Generating embeddings for file content chunks...")
-                    chunk_size = 100000  # Same as in save_file_chunks
+                    chunk_size = 100000  # Same as in save_file_chunk
                     for i in range(0, len(file_content), chunk_size):
                         chunk = file_content[i:i + chunk_size]
                         chunk_index = i // chunk_size
@@ -202,13 +214,14 @@ class TelegramBotService:
                     result = await agent.ainvoke(state)
                     if result and isinstance(result, dict) and result.get("response"):
                         logger.info("Sending response to user...")
+                        response_text = self._escape_markdown_v2(result["response"])
                         for attempt in range(3):  # Try up to 3 times
                             try:
                                 await update.message.reply_text(
-                                    result["response"],
+                                    response_text,
                                     parse_mode=ParseMode.MARKDOWN_V2
                                 )
-                                logger.debug(f"Response sent: {result['response'][:100]}{'...' if len(result['response']) > 100 else ''}")
+                                logger.debug(f"Response sent: {response_text[:100]}{'...' if len(response_text) > 100 else ''}")
                                 break
                             except Exception as reply_error:
                                 if attempt == 2:  # Last attempt
