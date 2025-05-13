@@ -528,7 +528,7 @@ class DatabaseService:
             result_messages = []
             for message_id, group in message_groups.items():
                 # Get the base message
-                message = await self.client.table("inna_messages")\
+                message = self.client.table("inna_messages")\
                     .select("*")\
                     .eq("id", message_id)\
                     .single()\
@@ -539,8 +539,15 @@ class DatabaseService:
                     avg_similarity = group["total_similarity"] / group["matching_chunk_count"]
                     
                     # Get file content if needed
-                    file_content = await self.get_file_content(message_id)
-                    if file_content:
+                    file_content = None
+                    file_chunks = self.client.table("inna_file_chunks")\
+                        .select("*")\
+                        .eq("message_id", message_id)\
+                        .order("chunk_index")\
+                        .execute()
+                    
+                    if file_chunks.data:
+                        file_content = "".join(chunk["chunk_content"] for chunk in file_chunks.data)
                         message.data["file_content"] = file_content
                         
                         # Boost similarity score for messages with file content
