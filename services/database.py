@@ -565,13 +565,12 @@ class DatabaseService:
         """Get relevant agent memories based on embedding similarity."""
         logger.debug(f"Retrieving memories for role: {role}, chat_id: {chat_id}")
         try:
-            # Compress query embedding to 2000D
-            compressed_embedding = compressor.compress(embedding)
-            logger.debug(f"Original embedding dim: {len(embedding)}, Compressed dim: {len(compressed_embedding)}")
+            # Embedding is already compressed by AzureOpenAIService
+            logger.debug(f"Using pre-compressed embedding with {len(embedding)} dimensions")
             
             # Build parameters dictionary
             params = {
-                "query_embedding": compressed_embedding,
+                "query_embedding": embedding,  # Already compressed to 2000D
                 "agent_role": role,
                 "match_threshold": threshold,
                 "match_count": limit
