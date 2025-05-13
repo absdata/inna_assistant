@@ -7,6 +7,10 @@ import operator
 from pydantic import BaseModel, Field
 from services.azure_openai import openai_service
 from services.database import db_service
+import logging
+
+# Create logger for this module
+logger = logging.getLogger(__name__)
 
 class AgentState(BaseModel):
     """State of the agent during execution."""
@@ -17,7 +21,7 @@ class AgentState(BaseModel):
     plan: str = Field(default="")
     response: str = Field(default="")
 
-async def retrieve_context(state: AgentState) -> dict:
+async def retrieve_context(state: AgentState) -> AgentState:
     """Node 1: Retrieve relevant context from vector store."""
     try:
         # Get embedding for the current message
@@ -31,12 +35,12 @@ async def retrieve_context(state: AgentState) -> dict:
         )
         
         state.context = similar_messages
-        return {"state": state, "next": "create_plan"}
+        return state
     except Exception as e:
         logger.error(f"Error in retrieve_context: {str(e)}", exc_info=True)
-        return {"state": state, "next": END}
+        return state
 
-async def create_plan(state: AgentState) -> dict:
+async def create_plan(state: AgentState) -> AgentState:
     """Node 2: Create a plan for responding to the message."""
     try:
         context_text = "\n".join([
@@ -53,12 +57,12 @@ async def create_plan(state: AgentState) -> dict:
         ]
         
         state.plan = await openai_service.get_completion(messages, temperature=0.7)
-        return {"state": state, "next": "generate_response"}
+        return state
     except Exception as e:
         logger.error(f"Error in create_plan: {str(e)}", exc_info=True)
-        return {"state": state, "next": END}
+        return state
 
-async def generate_response(state: AgentState) -> dict:
+async def generate_response(state: AgentState) -> AgentState:
     """Node 3: Generate the final response."""
     try:
         context_text = "\n".join([
@@ -75,10 +79,20 @@ async def generate_response(state: AgentState) -> dict:
         ]
         
         state.response = await openai_service.get_completion(messages, temperature=0.7)
-        return {"state": state, "next": END}
+        return state
     except Exception as e:
         logger.error(f"Error in generate_response: {str(e)}", exc_info=True)
-        return {"state": state, "next": END}
+        return state
+
+def should_continue(state: AgentState) -> str:
+    """Determine the next node based on state."""
+    if not state.context:
+        return END
+    if not state.plan:
+        return "create_plan"
+    if not state.response:
+        return "generate_response"
+    return END
 
 def create_agent() -> Graph:
     """Create the LangGraph agent workflow."""
@@ -90,12 +104,10 @@ def create_agent() -> Graph:
     workflow.add_node("create_plan", create_plan)
     workflow.add_node("generate_response", generate_response)
     
-    # Add edges based on conditional returns
-    workflow.add_edge("retrieve_context", "create_plan")
-    workflow.add_edge("create_plan", "generate_response")
-    workflow.add_edge("retrieve_context", END)
-    workflow.add_edge("create_plan", END)
-    workflow.add_edge("generate_response", END)
+    # Add conditional edges
+    workflow.add_edge("retrieve_context", should_continue)
+    workflow.add_edge("create_plan", should_continue)
+    workflow.add_edge("generate_response", should_continue)
     
     # Set entry point
     workflow.set_entry_point("retrieve_context")
