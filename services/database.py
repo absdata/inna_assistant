@@ -22,7 +22,7 @@ class DatabaseService:
         """Set up database tables and functions."""
         try:
             # Enable pgvector extension if not already enabled
-            self.client.table("_").rpc(
+            self.client.rpc(
                 "exec",
                 {"query": "create extension if not exists vector;"}
             ).execute()
@@ -469,7 +469,7 @@ class DatabaseService:
         """Set up or update the match_messages database function."""
         try:
             # Drop existing function first
-            self.client.table("_").rpc(
+            self.client.rpc(
                 "exec",
                 {"query": "DROP FUNCTION IF EXISTS match_messages(vector, float, int);"}
             ).execute()
@@ -502,7 +502,7 @@ class DatabaseService:
                 limit match_count;
             $$;
             """
-            self.client.table("_").rpc("exec", {"query": function_sql}).execute()
+            self.client.rpc("exec", {"query": function_sql}).execute()
             logger.info("Successfully created match_messages function")
         except Exception as e:
             logger.error(f"Error setting up match_messages function: {str(e)}", exc_info=True)
@@ -738,7 +738,7 @@ class DatabaseService:
             DROP FUNCTION IF EXISTS match_agent_memories(vector, text, float, int);
             DROP FUNCTION IF EXISTS match_agent_memories(vector, text, float, int, timestamp with time zone, timestamp with time zone);
             """
-            self.client.table("_").rpc("exec", {"query": drop_sql}).execute()
+            self.client.rpc("exec", {"query": drop_sql}).execute()
             logger.info("Dropped existing match_agent_memories functions")
 
             # Create the new function
@@ -776,7 +776,7 @@ class DatabaseService:
                 limit match_count;
             $$;
             """
-            self.client.table("_").rpc("exec", {"query": function_sql}).execute()
+            self.client.rpc("exec", {"query": function_sql}).execute()
             logger.info("Successfully created match_agent_memories function")
         except Exception as e:
             logger.error(f"Error setting up match_agent_memories function: {str(e)}", exc_info=True)
