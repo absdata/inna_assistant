@@ -4,6 +4,7 @@ from config.config import config
 import logging
 import asyncio
 from functools import partial
+from utils.embedding_compressor import compressor
 
 # Create logger for this module
 logger = logging.getLogger(__name__)
@@ -19,7 +20,7 @@ class AzureOpenAIService:
         logger.info("Azure OpenAI service initialized successfully")
     
     async def get_embedding(self, text: str) -> List[float]:
-        """Get embedding for text using Azure OpenAI."""
+        """Get embedding for text using Azure OpenAI and compress it."""
         logger.debug(f"Getting embedding for text: {text[:100]}{'...' if len(text) > 100 else ''}")
         try:
             # Run the synchronous API call in a thread pool
@@ -32,10 +33,17 @@ class AzureOpenAIService:
                     input=text
                 )
             )
-            logger.debug("Successfully generated embedding")
-            return response.data[0].embedding
+            
+            # Get the raw embedding
+            raw_embedding = response.data[0].embedding
+            
+            # Compress the embedding to target dimensions
+            compressed_embedding = compressor.compress(raw_embedding)
+            
+            logger.debug(f"Successfully generated and compressed embedding from {len(raw_embedding)} to {len(compressed_embedding)} dimensions")
+            return compressed_embedding
         except Exception as e:
-            logger.error(f"Error generating embedding: {str(e)}", exc_info=True)
+            logger.error(f"Error generating or compressing embedding: {str(e)}", exc_info=True)
             raise
 
     async def get_completion(

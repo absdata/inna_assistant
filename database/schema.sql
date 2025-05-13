@@ -23,7 +23,7 @@ create table if not exists inna_message_embeddings (
     message_id bigint references inna_messages(id) on delete cascade,
     chat_id bigint not null,
     text text not null,
-    embedding vector(1536) not null,
+    embedding vector(2000) not null,
     created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
@@ -60,7 +60,7 @@ create table if not exists inna_agent_memory (
     agent_role text not null, -- 'planner', 'doer', 'critic'
     chat_id bigint not null,
     context text not null,
-    embedding vector(1536) not null,
+    embedding vector(2000) not null,
     created_at timestamp with time zone default timezone('utc'::text, now()) not null,
     relevance_score float not null default 1.0
 );
@@ -96,7 +96,7 @@ create index if not exists inna_agent_memory_chat_id_idx on inna_agent_memory(ch
 
 -- Function to match similar messages based on embedding
 create or replace function match_messages(
-    query_embedding vector(1536),
+    query_embedding vector(2000),
     match_threshold float,
     match_count int
 )
@@ -121,7 +121,7 @@ $$;
 
 -- Function to match similar agent memories
 create or replace function match_agent_memories(
-    query_embedding vector(1536),
+    query_embedding vector(2000),
     agent_role text,
     match_threshold float,
     match_count int

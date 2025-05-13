@@ -22,7 +22,7 @@ class Config:
         
         # Application Configuration
         self.max_context_messages: int = int(self._get_env("MAX_CONTEXT_MESSAGES", "5"))
-        self.embedding_dimension: int = int(self._get_env("EMBEDDING_DIMENSION", "1536"))
+        self.embedding_dimension: int = int(self._get_env("EMBEDDING_DIMENSION", "2000"))
         self.debug_mode: bool = self._get_env("DEBUG_MODE", "false").lower() == "true"
 
         # Google Doc Configuration

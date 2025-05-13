@@ -1,7 +1,7 @@
 # LangGraph workflow definition
 
 from typing import Dict, List, Any, Tuple
-from langgraph.graph import Graph
+from langgraph.graph import Graph, END
 from langgraph.prebuilt import ToolExecutor
 import operator
 from pydantic import BaseModel, Field
@@ -17,7 +17,7 @@ class AgentState(BaseModel):
     plan: str = Field(default="")
     response: str = Field(default="")
 
-async def retrieve_context(state: AgentState) -> AgentState:
+async def retrieve_context(state: AgentState) -> Tuple[AgentState, str]:
     """Node 1: Retrieve relevant context from vector store."""
     # Get embedding for the current message
     query_text = state.current_message.get("text", "")
@@ -30,9 +30,9 @@ async def retrieve_context(state: AgentState) -> AgentState:
     )
     
     state.context = similar_messages
-    return state
+    return state, "create_plan"
 
-async def create_plan(state: AgentState) -> AgentState:
+async def create_plan(state: AgentState) -> Tuple[AgentState, str]:
     """Node 2: Create a plan for responding to the message."""
     context_text = "\n".join([
         f"- {msg['text']}" for msg in state.context
@@ -48,9 +48,9 @@ async def create_plan(state: AgentState) -> AgentState:
     ]
     
     state.plan = await openai_service.get_completion(messages, temperature=0.7)
-    return state
+    return state, "generate_response"
 
-async def generate_response(state: AgentState) -> AgentState:
+async def generate_response(state: AgentState) -> Tuple[AgentState, str]:
     """Node 3: Generate the final response."""
     context_text = "\n".join([
         f"- {msg['text']}" for msg in state.context
@@ -66,7 +66,7 @@ async def generate_response(state: AgentState) -> AgentState:
     ]
     
     state.response = await openai_service.get_completion(messages, temperature=0.7)
-    return state
+    return state, END
 
 def create_agent() -> Graph:
     """Create the LangGraph agent workflow."""
@@ -77,14 +77,11 @@ def create_agent() -> Graph:
     workflow.add_node("create_plan", create_plan)
     workflow.add_node("generate_response", generate_response)
     
-    # Add edges
-    workflow.add_edge("retrieve_context", "create_plan")
-    workflow.add_edge("create_plan", "generate_response")
-    
     # Set entry point
     workflow.set_entry_point("retrieve_context")
     
-    return workflow
+    # Compile the graph for async execution
+    return workflow.compile()
 
 # Create the agent instance
 agent = create_agent()
