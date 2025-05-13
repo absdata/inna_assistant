@@ -3,8 +3,6 @@ from typing import List, Dict, Optional, Any
 from datetime import datetime, timedelta
 from config.config import config
 import logging
-from utils.embedding_compressor import compressor
-import asyncio
 from services.document_processor import document_processor
 
 # Create logger for this module
@@ -14,121 +12,9 @@ class DatabaseService:
     def __init__(self):
         logger.info("Initializing database service...")
         self.client: Client = create_client(config.supabase_url, config.supabase_key)
-        # Set logging level to DEBUG to see all logs
         logger.setLevel(logging.DEBUG)
-        self._setup_database()
         logger.info("Database service initialized successfully")
     
-    def _setup_database(self):
-        """Set up database tables and functions."""
-        try:
-            # Note: pgvector extension should be enabled via Supabase dashboard or migrations
-            logger.info("Setting up database functions...")
-            
-            # Set up database functions
-            self._execute_sql_sync("DROP FUNCTION IF EXISTS match_messages(vector, float, int);")
-            self._execute_sql_sync(self._get_match_messages_function_sql())
-            
-            self._execute_sql_sync(self._get_match_agent_memories_drop_sql())
-            self._execute_sql_sync(self._get_match_agent_memories_function_sql())
-            
-            logger.info("Database functions updated")
-            
-        except Exception as e:
-            logger.error(f"Error setting up database: {str(e)}", exc_info=True)
-            raise
-
-    def _execute_sql_sync(self, sql: str):
-        """Execute raw SQL using Supabase synchronously."""
-        try:
-            # For now, we'll just log the SQL that would be executed
-            # These operations should be performed via migrations or the Supabase dashboard
-            logger.info(f"SQL to be executed via migration or dashboard:\n{sql}")
-            return None
-        except Exception as e:
-            logger.error(f"Error executing SQL: {str(e)}", exc_info=True)
-            raise
-
-    def _get_match_messages_function_sql(self) -> str:
-        """Get SQL for creating match_messages function."""
-        return """
-        create or replace function match_messages(
-            query_embedding vector(2000),
-            match_threshold float,
-            match_count int
-        )
-        returns table (
-            id bigint,
-            chat_id bigint,
-            text text,
-            chunk_index int,
-            similarity float
-        )
-        language plpgsql
-        as $$
-        begin
-            return query
-                select
-                    inna_message_embeddings.id,
-                    inna_message_embeddings.chat_id,
-                    inna_message_embeddings.text,
-                    inna_message_embeddings.chunk_index,
-                    1 - (inna_message_embeddings.embedding <=> query_embedding) as similarity
-                from inna_message_embeddings
-                where 1 - (inna_message_embeddings.embedding <=> query_embedding) > match_threshold
-                order by inna_message_embeddings.embedding <=> query_embedding
-                limit match_count;
-        end;
-        $$;
-        """
-
-    def _get_match_agent_memories_drop_sql(self) -> str:
-        """Get SQL for dropping match_agent_memories functions."""
-        return """
-        DROP FUNCTION IF EXISTS match_agent_memories(vector, text, float, int);
-        DROP FUNCTION IF EXISTS match_agent_memories(vector, text, float, int, timestamp with time zone, timestamp with time zone);
-        """
-
-    def _get_match_agent_memories_function_sql(self) -> str:
-        """Get SQL for creating match_agent_memories function."""
-        return """
-        create or replace function match_agent_memories(
-            query_embedding vector(2000),
-            agent_role text,
-            match_threshold float,
-            match_count int,
-            start_time timestamp with time zone default null,
-            end_time timestamp with time zone default null
-        )
-        returns table (
-            id bigint,
-            chat_id bigint,
-            context text,
-            metadata jsonb,
-            similarity float
-        )
-        language plpgsql
-        as $$
-        begin
-            return query
-                select
-                    inna_agent_memory.id,
-                    inna_agent_memory.chat_id,
-                    inna_agent_memory.context,
-                    inna_agent_memory.metadata,
-                    1 - (inna_agent_memory.embedding <=> query_embedding) as similarity
-                from inna_agent_memory
-                where 
-                    (agent_role is null or inna_agent_memory.agent_role = agent_role)
-                    and 1 - (inna_agent_memory.embedding <=> query_embedding) > match_threshold
-                    and (start_time is null or inna_agent_memory.created_at >= start_time)
-                    and (end_time is null or inna_agent_memory.created_at <= end_time)
-                order by inna_agent_memory.embedding <=> query_embedding
-                limit match_count;
-        end;
-        $$;
-        """
-
     def _log_query(self, operation: str, table: str, params: Dict[str, Any]) -> None:
         """Log database query details."""
         logger.debug(
@@ -253,17 +139,18 @@ class DatabaseService:
         chat_id: int,
         text: str,
         embedding: List[float],
-        chunk_index: Optional[int] = None
+        chunk_index: Optional[int] = None,
+        section_title: Optional[str] = None
     ) -> Dict[str, Any]:
         """Save a message embedding to the database."""
         try:
-            # The embedding is already compressed by AzureOpenAIService
             embedding_data = {
                 "message_id": message_id,
                 "chat_id": chat_id,
                 "text": text,
-                "embedding": embedding,  # Already compressed to 2000D
-                "chunk_index": chunk_index
+                "embedding": embedding,
+                "chunk_index": chunk_index,
+                "section_title": section_title
             }
             
             self._log_query("INSERT", "inna_message_embeddings", embedding_data)
@@ -296,11 +183,10 @@ class DatabaseService:
         """Get similar messages based on embedding similarity."""
         logger.debug(f"Finding similar messages for chat {chat_id} with threshold {threshold}")
         try:
-            # Embedding is already compressed by AzureOpenAIService
             result = self.client.rpc(
                 "match_messages",
                 {
-                    "query_embedding": embedding,  # Already compressed to 2000D
+                    "query_embedding": embedding,
                     "match_threshold": threshold,
                     "match_count": limit
                 }
@@ -565,12 +451,9 @@ class DatabaseService:
         """Get relevant agent memories based on embedding similarity."""
         logger.debug(f"Retrieving memories for role: {role}, chat_id: {chat_id}")
         try:
-            # Verify embedding dimensions
-            logger.debug(f"Using embedding with {len(embedding)} dimensions")
-            
             # Build parameters dictionary
             params = {
-                "query_embedding": embedding,  # Already compressed to 2000D by AzureOpenAIService
+                "query_embedding": embedding,
                 "agent_role": role,
                 "match_threshold": threshold,
                 "match_count": limit
@@ -618,51 +501,6 @@ class DatabaseService:
         except Exception as e:
             logger.error(f"Error updating memory access: {str(e)}", exc_info=True)
             # Don't raise the error as this is not critical
-
-    async def _migrate_embeddings(self, table_name: str, embedding_column: str = "embedding"):
-        """Migrate embeddings from 1536D to 2000D."""
-        try:
-            # Get all records with 1536D embeddings
-            result = self.client.table(table_name)\
-                .select("id", embedding_column)\
-                .execute()
-            
-            if not result.data:
-                return
-            
-            for record in result.data:
-                embedding = record[embedding_column]
-                if embedding and len(embedding) == 1536:
-                    # Compress the embedding to 2000D
-                    compressed = compressor.compress(embedding)
-                    
-                    # Update the record
-                    self.client.table(table_name)\
-                        .update({embedding_column: compressed})\
-                        .eq("id", record["id"])\
-                        .execute()
-            
-            logger.info(f"Successfully migrated embeddings in {table_name}")
-        except Exception as e:
-            logger.error(f"Error migrating embeddings in {table_name}: {str(e)}", exc_info=True)
-
-    async def migrate_all_embeddings(self):
-        """Migrate all embeddings in all tables."""
-        try:
-            tables = [
-                "inna_message_embeddings",
-                "inna_tasks",
-                "inna_summaries",
-                "inna_agent_memory"
-            ]
-            
-            for table in tables:
-                await self._migrate_embeddings(table)
-            
-            logger.info("Successfully migrated all embeddings")
-        except Exception as e:
-            logger.error(f"Error during embedding migration: {str(e)}", exc_info=True)
-            raise
 
     async def search_messages_with_content(
         self,
@@ -795,12 +633,11 @@ class DatabaseService:
     ) -> Dict[str, Any]:
         """Save an agent memory to the database."""
         try:
-            # Embedding is already compressed by AzureOpenAIService
             memory_data = {
                 "agent_role": role,
                 "chat_id": chat_id,
                 "context": context,
-                "embedding": embedding,  # Already compressed to 2000D
+                "embedding": embedding,
                 "relevance_score": relevance_score,
                 "metadata": metadata or {}
             }
@@ -819,4 +656,5 @@ class DatabaseService:
             logger.error(f"Error saving memory: {str(e)}", exc_info=True)
             raise
 
+# Create singleton instance
 db_service = DatabaseService() 
