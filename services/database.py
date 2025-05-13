@@ -257,14 +257,12 @@ class DatabaseService:
     ) -> Dict[str, Any]:
         """Save a message embedding to the database."""
         try:
-            # Compress embedding to 2000D
-            compressed_embedding = compressor.compress(embedding)
-            
+            # The embedding is already compressed by AzureOpenAIService
             embedding_data = {
                 "message_id": message_id,
                 "chat_id": chat_id,
                 "text": text,
-                "embedding": compressed_embedding,
+                "embedding": embedding,  # Already compressed to 2000D
                 "chunk_index": chunk_index
             }
             
@@ -298,13 +296,11 @@ class DatabaseService:
         """Get similar messages based on embedding similarity."""
         logger.debug(f"Finding similar messages for chat {chat_id} with threshold {threshold}")
         try:
-            # Compress query embedding to 2000D
-            compressed_embedding = compressor.compress(embedding)
-            
+            # Embedding is already compressed by AzureOpenAIService
             result = self.client.rpc(
                 "match_messages",
                 {
-                    "query_embedding": compressed_embedding,
+                    "query_embedding": embedding,  # Already compressed to 2000D
                     "match_threshold": threshold,
                     "match_count": limit
                 }
@@ -689,12 +685,9 @@ class DatabaseService:
         )
         
         try:
-            # Compress query embedding to 2000D
-            compressed_embedding = compressor.compress(query_embedding)
-            
-            # First, get similar messages by embedding with a higher limit for initial matching
+            # Embedding is already compressed by AzureOpenAIService
             rpc_params = {
-                "query_embedding": compressed_embedding,
+                "query_embedding": query_embedding,  # Already compressed to 2000D
                 "match_threshold": threshold,
                 "match_count": limit * 3  # Get more initial matches to ensure we don't miss relevant chunks
             }
@@ -820,14 +813,12 @@ class DatabaseService:
     ) -> Dict[str, Any]:
         """Save an agent memory to the database."""
         try:
-            # Compress embedding to 2000D
-            compressed_embedding = compressor.compress(embedding)
-            
+            # Embedding is already compressed by AzureOpenAIService
             memory_data = {
                 "agent_role": role,
                 "chat_id": chat_id,
                 "context": context,
-                "embedding": compressed_embedding,
+                "embedding": embedding,  # Already compressed to 2000D
                 "relevance_score": relevance_score,
                 "metadata": metadata or {}
             }
