@@ -1,7 +1,7 @@
 from typing import List, Dict, Any, Optional
 import logging
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
+from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
 from datetime import datetime
 import re
 import tiktoken
