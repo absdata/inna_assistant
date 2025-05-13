@@ -36,7 +36,7 @@ create table if not exists inna_message_embeddings (
     message_id bigint references inna_messages(id) on delete cascade,
     chat_id bigint not null,
     text text not null,
-    embedding vector(2000) not null,
+    embedding vector(1536) not null,
     chunk_index int,  -- NULL for regular messages, index number for file chunks
     created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
@@ -47,45 +47,41 @@ create index if not exists inna_message_embeddings_chunk_idx on inna_message_emb
 -- Tasks table for planning and roadmap
 create table if not exists inna_tasks (
     id bigint primary key generated always as identity,
+    chat_id bigint not null,
     title text not null,
     description text,
     status text not null default 'pending',
     priority int not null default 1,
     due_date timestamp with time zone,
+    embedding vector(1536),
+    metadata jsonb default '{}'::jsonb,
     created_at timestamp with time zone default timezone('utc'::text, now()) not null,
-    updated_at timestamp with time zone default timezone('utc'::text, now()) not null,
-    chat_id bigint not null,
-    assigned_to text,
-    parent_task_id bigint references inna_tasks(id) on delete set null
+    updated_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
--- Weekly summaries table
+-- Summaries table for conversation summaries
 create table if not exists inna_summaries (
     id bigint primary key generated always as identity,
     chat_id bigint not null,
-    summary_type text not null, -- 'weekly', 'monthly', etc.
-    content text not null,
-    period_start timestamp with time zone not null,
-    period_end timestamp with time zone not null,
-    created_at timestamp with time zone default timezone('utc'::text, now()) not null,
-    gdoc_url text -- URL to synced Google Doc
+    summary text not null,
+    embedding vector(1536),
+    metadata jsonb default '{}'::jsonb,
+    created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
--- Agent memory for multi-agent system
+-- Agent memory table for long-term context
 create table if not exists inna_agent_memory (
     id bigint primary key generated always as identity,
-    agent_role text not null, -- 'chat', 'document', 'summary', 'task'
     chat_id bigint not null,
+    agent_role text not null,
     context text not null,
-    embedding vector(2000) not null,
-    metadata jsonb default '{}',
+    embedding vector(1536) not null,
     relevance_score float not null default 1.0,
-    created_at timestamp with time zone default timezone('utc'::text, now()) not null,
-    last_accessed timestamp with time zone default timezone('utc'::text, now()) not null,
-    access_count int default 0
+    metadata jsonb default '{}'::jsonb,
+    created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
--- Google Docs sync status
+-- Google Doc sync status table
 create table if not exists inna_gdoc_sync (
     id bigint primary key generated always as identity,
     doc_id text not null,
@@ -113,7 +109,7 @@ create index if not exists inna_agent_memory_created_at_idx on inna_agent_memory
 
 -- Function to match similar messages based on embedding
 create or replace function match_messages(
-    query_embedding vector(2000),
+    query_embedding vector(1536),
     match_threshold float,
     match_count int
 )
@@ -140,7 +136,7 @@ $$;
 
 -- Function to match agent memories with time filtering
 create or replace function match_agent_memories(
-    query_embedding vector(2000),
+    query_embedding vector(1536),
     agent_role text,
     match_threshold float,
     match_count int,

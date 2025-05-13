@@ -1,39 +1,22 @@
 from typing import List
-import numpy as np
 import logging
-from sklearn.random_projection import GaussianRandomProjection
 
 logger = logging.getLogger(__name__)
 
 class EmbeddingCompressor:
-    def __init__(self, target_dimensions: int = 2000):
+    def __init__(self, target_dimensions: int = 1536):
         """Initialize the embedding compressor with target dimensions."""
         self.target_dimensions = target_dimensions
-        self.random_projection = GaussianRandomProjection(n_components=target_dimensions, random_state=42)
-        self.projection_matrix = None
         logger.info(f"Initialized embedding compressor with target dimensions: {target_dimensions}")
 
     def compress(self, embeddings: List[float]) -> List[float]:
-        """Compress a single embedding vector to target dimensions using random projection."""
+        """Pass through the embeddings since we're using native Azure OpenAI dimensions."""
         try:
-            # Convert input to numpy array
-            embedding_array = np.array(embeddings).reshape(1, -1)
-            original_dim = embedding_array.shape[1]
-
-            # Initialize projection matrix if not already done
-            if self.projection_matrix is None:
-                logger.debug("Initializing random projection matrix")
-                self.random_projection.fit(np.zeros((1, original_dim)))
-                self.projection_matrix = self.random_projection.components_
-
-            # Apply projection
-            compressed = np.dot(embedding_array, self.projection_matrix.T)
-            result = compressed.flatten().tolist()
-            
-            logger.debug(f"Successfully compressed embedding from {len(embeddings)} to {len(result)} dimensions")
-            return result
+            if len(embeddings) != self.target_dimensions:
+                raise ValueError(f"Expected embedding dimension {self.target_dimensions}, got {len(embeddings)}")
+            return embeddings
         except Exception as e:
-            logger.error(f"Error compressing embedding: {str(e)}", exc_info=True)
+            logger.error(f"Error processing embedding: {str(e)}", exc_info=True)
             raise
 
     def decompress(self, compressed_embedding: List[float]) -> List[float]:

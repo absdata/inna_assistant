@@ -31,7 +31,7 @@ class Config:
         
         # Application Configuration
         self.max_context_messages: int = int(self._get_env("MAX_CONTEXT_MESSAGES", "5"))
-        self.embedding_dimension: int = int(self._get_env("EMBEDDING_DIMENSION", "2000"))
+        self.embedding_dimension: int = 1536  # Azure OpenAI text-embedding-ada-002 dimension
         self.debug_mode: bool = self._get_env("DEBUG_MODE", "false").lower() == "true"
         self.log_level: str = self._get_env("LOG_LEVEL", "INFO")
 
@@ -44,14 +44,27 @@ class Config:
     
     def _setup_logging(self) -> None:
         """Configure logging for the application."""
-        log_level = os.getenv("LOG_LEVEL", "INFO")
+        log_level = getattr(logging, self._get_env("LOG_LEVEL", "INFO").upper())
+        log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        
+        # Configure root logger
         logging.basicConfig(
-            level=getattr(logging, log_level.upper()),
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            level=log_level,
+            format=log_format,
             handlers=[
-                logging.StreamHandler()  # Output to console
+                logging.StreamHandler(),  # Console handler
+                logging.FileHandler('inna.log')  # File handler
             ]
         )
+        
+        # Set third-party loggers to WARNING to reduce noise
+        logging.getLogger('httpx').setLevel(logging.WARNING)
+        logging.getLogger('httpcore').setLevel(logging.WARNING)
+        logging.getLogger('openai').setLevel(logging.WARNING)
+        
+        # Create logger for this module
+        logger = logging.getLogger(__name__)
+        logger.debug("Logging configured successfully")
     
     @staticmethod
     def _get_env(key: str, default: Optional[str] = None) -> str:
