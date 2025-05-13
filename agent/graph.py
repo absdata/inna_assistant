@@ -84,17 +84,17 @@ async def generate_response(state: AgentState) -> Tuple[AgentState, str]:
         logger.error(f"Error in generate_response: {str(e)}", exc_info=True)
         return state, "route"
 
-def route(state: AgentState) -> Tuple[AgentState, str]:
+def route(state: AgentState) -> str:
     """Route to the next step based on state."""
     logger.debug(f"Routing next step. Context: {bool(state.context)}, Plan: {bool(state.plan)}, Response: {bool(state.response)}")
     
     if not state.context:
-        return state, END
+        return END
     if not state.plan:
-        return state, "create_plan"
+        return "create_plan"
     if not state.response:
-        return state, "generate_response"
-    return state, END
+        return "generate_response"
+    return END
 
 def create_agent() -> Graph:
     """Create the LangGraph agent workflow."""
@@ -107,13 +107,20 @@ def create_agent() -> Graph:
     workflow.add_node("generate_response", generate_response)
     workflow.add_node("route", route)
     
-    # Add edges
+    # Add edges to router
     workflow.add_edge("retrieve_context", "route")
     workflow.add_edge("create_plan", "route")
     workflow.add_edge("generate_response", "route")
-    workflow.add_edge("route", "create_plan")
-    workflow.add_edge("route", "generate_response")
-    workflow.add_edge("route", END)
+    
+    # Add conditional edges from router
+    workflow.add_conditional_edges(
+        "route",
+        {
+            "create_plan": lambda x: not x.plan and bool(x.context),
+            "generate_response": lambda x: not x.response and bool(x.plan),
+            END: lambda x: not x.context or bool(x.response)
+        }
+    )
     
     # Set entry point
     workflow.set_entry_point("retrieve_context")
