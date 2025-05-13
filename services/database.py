@@ -5,6 +5,7 @@ from config.config import config
 import logging
 from utils.embedding_compressor import compressor
 import asyncio
+from services.document_processor import document_processor
 
 # Create logger for this module
 logger = logging.getLogger(__name__)
@@ -165,8 +166,7 @@ class DatabaseService:
             "user_id": user_id,
             "username": username,
             "text": text,
-            "file_url": file_url,
-            "file_content": file_content
+            "file_url": file_url
         }
         
         self._log_query("INSERT", "inna_messages", message_data)
@@ -669,36 +669,27 @@ class DatabaseService:
         chat_id: int,
         query_embedding: List[float],
         text_search: Optional[str] = None,
-        threshold: float = 0.3,  # Lower threshold for better recall
-        limit: int = 20  # Increased limit to find more potential matches
+        section_title: Optional[str] = None,
+        threshold: float = 0.3,
+        limit: int = 20
     ) -> List[Dict[str, Any]]:
         """Search messages using both vector similarity and text content."""
-        logger.debug(
-            f"\n{'='*80}\n"
-            f"Starting Combined Search:\n"
-            f"Chat ID: {chat_id}\n"
-            f"Text Search: {text_search}\n"
-            f"Threshold: {threshold}\n"
-            f"Limit: {limit}\n"
-            f"{'='*80}"
-        )
+        logger.info(f"Searching messages for chat {chat_id}")
         
         try:
-            # Embedding is already compressed by AzureOpenAIService
+            # Build RPC parameters
             rpc_params = {
-                "query_embedding": query_embedding,  # Already compressed to 2000D
+                "query_embedding": query_embedding,
                 "match_threshold": threshold,
-                "match_count": limit * 3  # Get more initial matches to ensure we don't miss relevant chunks
+                "match_count": limit * 3
             }
+            
+            if section_title:
+                rpc_params["section_filter"] = section_title
+            
             self._log_query("RPC", "match_messages", rpc_params)
-            
-            similar_messages = self.client.rpc(
-                "match_messages",
-                rpc_params
-            ).execute()
-            
+            similar_messages = self.client.rpc("match_messages", rpc_params).execute()
             self._log_result("Vector Search", similar_messages)
-            logger.debug(f"Vector search found {len(similar_messages.data) if similar_messages.data else 0} matches")
             
             # Group results by message_id to combine chunks
             message_groups = {}
@@ -708,8 +699,8 @@ class DatabaseService:
                     message_groups[message_id] = {
                         "chunks": [],
                         "max_similarity": msg["similarity"],
-                        "total_similarity": 0,  # Track total similarity for better ranking
-                        "matching_chunk_count": 0  # Count matching chunks for better document relevance
+                        "total_similarity": 0,
+                        "matching_chunk_count": 0
                     }
                 message_groups[message_id]["chunks"].append(msg)
                 message_groups[message_id]["total_similarity"] += msg["similarity"]
@@ -730,11 +721,10 @@ class DatabaseService:
                     .execute()
                 
                 if message.data:
-                    # Calculate average similarity for better document ranking
+                    # Calculate average similarity
                     avg_similarity = group["total_similarity"] / group["matching_chunk_count"]
                     
-                    # Get file content if needed
-                    file_content = None
+                    # Get file chunks with metadata
                     file_chunks = self.client.table("inna_file_chunks")\
                         .select("*")\
                         .eq("message_id", message_id)\
@@ -742,13 +732,23 @@ class DatabaseService:
                         .execute()
                     
                     if file_chunks.data:
-                        file_content = "".join(chunk["chunk_content"] for chunk in file_chunks.data)
-                        message.data["file_content"] = file_content
+                        # Group chunks by section
+                        sections = {}
+                        for chunk in file_chunks.data:
+                            section = chunk["section_title"] or "Main Content"
+                            if section not in sections:
+                                sections[section] = []
+                            sections[section].append(chunk["chunk_content"])
+                        
+                        # Combine chunks by section
+                        message.data["sections"] = {
+                            title: "".join(contents)
+                            for title, contents in sections.items()
+                        }
                         
                         # Boost similarity score for messages with file content
-                        # This helps prioritize document content over chat messages
                         if group["matching_chunk_count"] > 1:
-                            avg_similarity *= 1.2  # 20% boost for multi-chunk matches
+                            avg_similarity *= 1.2
                     
                     # Add similarity scores and chunk information
                     message.data["max_similarity"] = group["max_similarity"]
@@ -758,7 +758,8 @@ class DatabaseService:
                         {
                             "chunk_index": chunk["chunk_index"],
                             "similarity": chunk["similarity"],
-                            "text": chunk["text"]
+                            "text": chunk["text"],
+                            "section_title": chunk.get("section_title")
                         }
                         for chunk in group["chunks"]
                     ], key=lambda x: x["similarity"], reverse=True)
@@ -767,38 +768,20 @@ class DatabaseService:
                     if text_search:
                         text_lower = text_search.lower()
                         message_text = (message.data.get("text") or "").lower()
-                        file_content_lower = (file_content or "").lower()
+                        sections_text = "\n".join(message.data.get("sections", {}).values()).lower()
                         
-                        # If text is found in content, boost the similarity score
-                        if text_lower in message_text or text_lower in file_content_lower:
-                            avg_similarity *= 1.3  # 30% boost for text match
+                        if text_lower in message_text or text_lower in sections_text:
+                            avg_similarity *= 1.3
                     
                     message.data["final_similarity"] = avg_similarity
                     result_messages.append(message.data)
-                    
-                    logger.debug(
-                        f"Processed message {message_id}:\n"
-                        f"Max Similarity: {group['max_similarity']:.3f}\n"
-                        f"Avg Similarity: {avg_similarity:.3f}\n"
-                        f"Matching Chunks: {group['matching_chunk_count']}\n"
-                        f"Has File Content: {'Yes' if file_content else 'No'}"
-                    )
             
             # Sort by final similarity score
             result_messages.sort(key=lambda x: x["final_similarity"], reverse=True)
-            final_results = result_messages[:limit]
-            
-            logger.debug(
-                f"Search Results Summary:\n"
-                f"Total Messages Found: {len(result_messages)}\n"
-                f"Returned Results: {len(final_results)}\n"
-                f"Top Similarity Scores: {[f'{msg.get('final_similarity', 0):.3f}' for msg in final_results[:3]]}"
-            )
-            
-            return final_results
+            return result_messages[:limit]
             
         except Exception as e:
-            logger.error(f"Error searching messages: {str(e)}", exc_info=True)
+            logger.error(f"Error in search process: {str(e)}", exc_info=True)
             raise
 
     async def save_agent_memory(
