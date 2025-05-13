@@ -24,38 +24,55 @@ class AgentState(BaseModel):
     def to_dict(self) -> Dict[str, Any]:
         """Convert state to dictionary format."""
         return {
-            "messages": self.messages,
-            "context": self.context,
-            "current_message": self.current_message,
+            "messages": list(self.messages),  # Create new list
+            "context": list(self.context),    # Create new list
+            "current_message": dict(self.current_message),  # Create new dict
             "chat_id": self.chat_id,
-            "plan": self.plan,
-            "response": self.response
+            "plan": str(self.plan),
+            "response": str(self.response)
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AgentState":
         """Create state from dictionary."""
-        return cls(**data)
+        return cls(
+            messages=list(data.get("messages", [])),
+            context=list(data.get("context", [])),
+            current_message=dict(data.get("current_message", {})),
+            chat_id=int(data.get("chat_id", 0)),
+            plan=str(data.get("plan", "")),
+            response=str(data.get("response", ""))
+        )
+
+def create_initial_state() -> Dict[str, Any]:
+    """Create initial state dictionary."""
+    return {
+        "messages": [],
+        "context": [],
+        "current_message": {},
+        "chat_id": 0,
+        "plan": "",
+        "response": ""
+    }
 
 async def retrieve_context(state: Dict[str, Any]) -> Dict[str, Any]:
     """Node 1: Retrieve relevant context from vector store."""
     try:
-        # Convert dict to AgentState
-        state_obj = AgentState.from_dict(state)
-        
         # Get embedding for the current message
-        query_text = state_obj.current_message.get("text", "")
+        query_text = state["current_message"].get("text", "")
         embedding = await openai_service.get_embedding(query_text)
         
         # Get similar messages
         similar_messages = await db_service.get_similar_messages(
             embedding=embedding,
-            chat_id=state_obj.chat_id
+            chat_id=state["chat_id"]
         )
         
-        # Update state
-        state_obj.context = similar_messages
-        return state_obj.to_dict()
+        # Return new state dictionary
+        return {
+            **state,
+            "context": similar_messages
+        }
     except Exception as e:
         logger.error(f"Error in retrieve_context: {str(e)}", exc_info=True)
         return state
@@ -63,11 +80,8 @@ async def retrieve_context(state: Dict[str, Any]) -> Dict[str, Any]:
 async def create_plan(state: Dict[str, Any]) -> Dict[str, Any]:
     """Node 2: Create a plan for responding to the message."""
     try:
-        # Convert dict to AgentState
-        state_obj = AgentState.from_dict(state)
-        
         context_text = "\n".join([
-            f"- {msg['text']}" for msg in state_obj.context
+            f"- {msg['text']}" for msg in state["context"]
         ])
         
         messages = [
@@ -75,12 +89,17 @@ async def create_plan(state: Dict[str, Any]) -> Dict[str, Any]:
                 "You are a planning agent. Create a brief plan for how to respond to the user's message using the available context."
             ),
             openai_service.create_user_message(
-                f"Context:\n{context_text}\n\nUser message: {state_obj.current_message.get('text', '')}\n\nCreate a plan:"
+                f"Context:\n{context_text}\n\nUser message: {state['current_message'].get('text', '')}\n\nCreate a plan:"
             )
         ]
         
-        state_obj.plan = await openai_service.get_completion(messages, temperature=0.7)
-        return state_obj.to_dict()
+        plan = await openai_service.get_completion(messages, temperature=0.7)
+        
+        # Return new state dictionary
+        return {
+            **state,
+            "plan": plan
+        }
     except Exception as e:
         logger.error(f"Error in create_plan: {str(e)}", exc_info=True)
         return state
@@ -88,11 +107,8 @@ async def create_plan(state: Dict[str, Any]) -> Dict[str, Any]:
 async def generate_response(state: Dict[str, Any]) -> Dict[str, Any]:
     """Node 3: Generate the final response."""
     try:
-        # Convert dict to AgentState
-        state_obj = AgentState.from_dict(state)
-        
         context_text = "\n".join([
-            f"- {msg['text']}" for msg in state_obj.context
+            f"- {msg['text']}" for msg in state["context"]
         ])
         
         messages = [
@@ -100,26 +116,28 @@ async def generate_response(state: Dict[str, Any]) -> Dict[str, Any]:
                 "You are Inna, a helpful and smart startup co-founder. Respond in a clear, professional manner."
             ),
             openai_service.create_user_message(
-                f"Context:\n{context_text}\n\nPlan:\n{state_obj.plan}\n\nUser message: {state_obj.current_message.get('text', '')}\n\nRespond:"
+                f"Context:\n{context_text}\n\nPlan:\n{state['plan']}\n\nUser message: {state['current_message'].get('text', '')}\n\nRespond:"
             )
         ]
         
-        state_obj.response = await openai_service.get_completion(messages, temperature=0.7)
-        return state_obj.to_dict()
+        response = await openai_service.get_completion(messages, temperature=0.7)
+        
+        # Return new state dictionary
+        return {
+            **state,
+            "response": response
+        }
     except Exception as e:
         logger.error(f"Error in generate_response: {str(e)}", exc_info=True)
         return state
 
 def get_next_step(state: Dict[str, Any]) -> str:
     """Determine the next step in the workflow."""
-    # Convert dict to AgentState for type safety
-    state_obj = AgentState.from_dict(state)
-    
-    if not state_obj.context:
+    if not state["context"]:
         return "end"
-    if not state_obj.plan:
+    if not state["plan"]:
         return "create_plan"
-    if not state_obj.response:
+    if not state["response"]:
         return "generate_response"
     return "end"
 
