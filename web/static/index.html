@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Inna AI Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+</head>
+<body class="bg-gray-100">
+    <div x-data="dashboard()" class="min-h-screen">
+        <!-- Header -->
+        <header class="bg-white shadow">
+            <div class="max-w-7xl mx-auto py-6 px-4 sm:px-6 lg:px-8">
+                <h1 class="text-3xl font-bold text-gray-900">Inna AI Dashboard</h1>
+            </div>
+        </header>
+
+        <!-- Main content -->
+        <main class="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
+            <!-- Chat selector -->
+            <div class="mb-8">
+                <label class="block text-sm font-medium text-gray-700">Select Chat</label>
+                <select x-model="selectedChat" @change="loadData()" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md">
+                    <template x-for="chat in chats" :key="chat">
+                        <option :value="chat" x-text="'Chat ' + chat"></option>
+                    </template>
+                </select>
+            </div>
+
+            <!-- Stats -->
+            <div class="mb-8 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-5">
+                <div class="bg-white overflow-hidden shadow rounded-lg">
+                    <div class="px-4 py-5 sm:p-6">
+                        <dt class="text-sm font-medium text-gray-500 truncate">Total Messages</dt>
+                        <dd class="mt-1 text-3xl font-semibold text-gray-900" x-text="stats.total_messages"></dd>
+                    </div>
+                </div>
+                <div class="bg-white overflow-hidden shadow rounded-lg">
+                    <div class="px-4 py-5 sm:p-6">
+                        <dt class="text-sm font-medium text-gray-500 truncate">Total Tasks</dt>
+                        <dd class="mt-1 text-3xl font-semibold text-gray-900" x-text="stats.total_tasks"></dd>
+                    </div>
+                </div>
+                <div class="bg-white overflow-hidden shadow rounded-lg">
+                    <div class="px-4 py-5 sm:p-6">
+                        <dt class="text-sm font-medium text-gray-500 truncate">Completed Tasks</dt>
+                        <dd class="mt-1 text-3xl font-semibold text-gray-900" x-text="stats.completed_tasks"></dd>
+                    </div>
+                </div>
+                <div class="bg-white overflow-hidden shadow rounded-lg">
+                    <div class="px-4 py-5 sm:p-6">
+                        <dt class="text-sm font-medium text-gray-500 truncate">Pending Tasks</dt>
+                        <dd class="mt-1 text-3xl font-semibold text-gray-900" x-text="stats.pending_tasks"></dd>
+                    </div>
+                </div>
+                <div class="bg-white overflow-hidden shadow rounded-lg">
+                    <div class="px-4 py-5 sm:p-6">
+                        <dt class="text-sm font-medium text-gray-500 truncate">Total Summaries</dt>
+                        <dd class="mt-1 text-3xl font-semibold text-gray-900" x-text="stats.total_summaries"></dd>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Tasks -->
+            <div class="bg-white shadow sm:rounded-lg mb-8">
+                <div class="px-4 py-5 sm:px-6">
+                    <h2 class="text-lg font-medium text-gray-900">Tasks</h2>
+                </div>
+                <div class="border-t border-gray-200">
+                    <ul class="divide-y divide-gray-200">
+                        <template x-for="task in tasks" :key="task.id">
+                            <li class="px-4 py-4">
+                                <div class="flex items-center justify-between">
+                                    <div class="flex items-center">
+                                        <span class="h-8 w-8 rounded-full flex items-center justify-center" 
+                                              :class="task.status === 'completed' ? 'bg-green-100 text-green-600' : 'bg-yellow-100 text-yellow-600'">
+                                            <span x-text="task.status === 'completed' ? '✓' : '⏳'"></span>
+                                        </span>
+                                        <div class="ml-3">
+                                            <p class="text-sm font-medium text-gray-900" x-text="task.title"></p>
+                                            <p class="text-sm text-gray-500" x-text="task.description || 'No description'"></p>
+                                        </div>
+                                    </div>
+                                    <div class="text-sm text-gray-500">
+                                        <span x-text="'Priority: ' + '❗'.repeat(task.priority)"></span>
+                                    </div>
+                                </div>
+                            </li>
+                        </template>
+                    </ul>
+                </div>
+            </div>
+
+            <!-- Summaries -->
+            <div class="bg-white shadow sm:rounded-lg">
+                <div class="px-4 py-5 sm:px-6">
+                    <h2 class="text-lg font-medium text-gray-900">Recent Summaries</h2>
+                </div>
+                <div class="border-t border-gray-200">
+                    <ul class="divide-y divide-gray-200">
+                        <template x-for="summary in summaries" :key="summary.id">
+                            <li class="px-4 py-4">
+                                <div class="mb-2">
+                                    <span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium"
+                                          :class="summary.summary_type === 'weekly' ? 'bg-blue-100 text-blue-800' : 'bg-purple-100 text-purple-800'"
+                                          x-text="summary.summary_type"></span>
+                                    <span class="ml-2 text-sm text-gray-500" x-text="formatDate(summary.period_start) + ' - ' + formatDate(summary.period_end)"></span>
+                                </div>
+                                <p class="text-sm text-gray-900 whitespace-pre-line" x-text="summary.content"></p>
+                                <template x-if="summary.gdoc_url">
+                                    <a :href="summary.gdoc_url" target="_blank" class="mt-2 text-sm text-indigo-600 hover:text-indigo-900">View in Google Docs →</a>
+                                </template>
+                            </li>
+                        </template>
+                    </ul>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        function dashboard() {
+            return {
+                chats: [],
+                selectedChat: null,
+                stats: {
+                    total_messages: 0,
+                    total_tasks: 0,
+                    completed_tasks: 0,
+                    pending_tasks: 0,
+                    total_summaries: 0
+                },
+                tasks: [],
+                summaries: [],
+                
+                async init() {
+                    await this.loadChats();
+                    if (this.chats.length > 0) {
+                        this.selectedChat = this.chats[0];
+                        await this.loadData();
+                    }
+                },
+                
+                async loadChats() {
+                    const response = await fetch('/api/active_chats');
+                    this.chats = await response.json();
+                },
+                
+                async loadData() {
+                    if (!this.selectedChat) return;
+                    
+                    // Load stats
+                    const statsResponse = await fetch(`/api/stats/${this.selectedChat}`);
+                    this.stats = await statsResponse.json();
+                    
+                    // Load tasks
+                    const tasksResponse = await fetch(`/api/tasks/${this.selectedChat}`);
+                    this.tasks = await tasksResponse.json();
+                    
+                    // Load summaries
+                    const summariesResponse = await fetch(`/api/summaries/${this.selectedChat}`);
+                    this.summaries = await summariesResponse.json();
+                },
+                
+                formatDate(dateStr) {
+                    return new Date(dateStr).toLocaleDateString();
+                }
+            }
+        }
+    </script>
+</body>
+</html> 

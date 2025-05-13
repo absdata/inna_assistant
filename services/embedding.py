@@ -1,0 +1,1 @@
+# Azure OpenAI embedding logic
