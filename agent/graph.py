@@ -9,6 +9,7 @@ from services.azure_openai import openai_service
 from services.database import db_service
 from agent.roles.critic import critic_agent
 from agent.roles.planner import planner_agent
+from agent.roles.base import AgentMemory
 import logging
 
 # Create logger for this module
@@ -424,17 +425,37 @@ def get_next_step(state: Union[Dict[str, Any], AgentState]) -> str:
     # Convert to AgentState for type safety
     state_obj = ensure_agent_state(state)
     
+    # Check if we have context
     if not state_obj.context:
         return "end"
+    
+    # Check if we need to create a plan
     if not state_obj.plan:
         return "create_plan"
-    if not state_obj.criticism:
+    
+    # Check if we need critic analysis
+    if not state_obj.criticism and not is_summary_request(state_obj.current_message.get("text", "")):
         return "analyze_with_critic"
-    if not state_obj.task_updates:
+    
+    # Check if we need task updates
+    if not state_obj.task_updates and not is_summary_request(state_obj.current_message.get("text", "")):
         return "update_tasks_with_planner"
+    
+    # Check if we need to generate a response
     if not state_obj.response:
         return "generate_response"
+    
+    # If everything is done, end the workflow
     return "end"
+
+def is_summary_request(text: str) -> bool:
+    """Check if the message is a summary request."""
+    if not text:
+        return False
+    return any(
+        keyword in text.lower()
+        for keyword in ["summarize", "summary", "summarise", "summarisation", "summarization"]
+    )
 
 def create_agent() -> Graph:
     """Create the LangGraph agent workflow."""
