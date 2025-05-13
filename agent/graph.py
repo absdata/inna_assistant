@@ -50,18 +50,32 @@ async def retrieve_context(state: Union[Dict[str, Any], AgentState]) -> Dict[str
         # Convert to AgentState for type safety
         state_obj = ensure_agent_state(state)
         
-        # Get embedding for the current message
-        query_text = state_obj.current_message.get("text", "")
-        embedding = await openai_service.get_embedding(query_text)
+        # Get the current message text
+        query_text = state_obj.current_message.get("text", "").lower()
         
-        # Get similar messages
-        similar_messages = await db_service.get_similar_messages(
-            embedding=embedding,
-            chat_id=state_obj.chat_id
+        # Check if this is a summarization request
+        is_summary_request = any(
+            keyword in query_text 
+            for keyword in ["summarize", "summary", "summarise", "summarisation", "summarization"]
         )
         
-        # Update state
-        state_obj.context = similar_messages
+        if is_summary_request:
+            # For summarization, get full chat history
+            logger.info("Summarization request detected - retrieving full chat history")
+            chat_history = await db_service.get_chat_history(
+                chat_id=state_obj.chat_id,
+                limit=100  # Get last 100 messages
+            )
+            state_obj.context = chat_history
+        else:
+            # For regular queries, get similar messages
+            embedding = await openai_service.get_embedding(query_text)
+            similar_messages = await db_service.get_similar_messages(
+                embedding=embedding,
+                chat_id=state_obj.chat_id
+            )
+            state_obj.context = similar_messages
+            
         return state_obj.to_dict()
     except Exception as e:
         logger.error(f"Error in retrieve_context: {str(e)}", exc_info=True)
@@ -73,18 +87,34 @@ async def create_plan(state: Union[Dict[str, Any], AgentState]) -> Dict[str, Any
         # Convert to AgentState for type safety
         state_obj = ensure_agent_state(state)
         
+        query_text = state_obj.current_message.get("text", "").lower()
+        is_summary_request = any(
+            keyword in query_text 
+            for keyword in ["summarize", "summary", "summarise", "summarisation", "summarization"]
+        )
+        
         context_text = "\n".join([
-            f"- {msg['text']}" for msg in state_obj.context
+            f"- {msg.get('text', '')}" for msg in state_obj.context if msg.get('text')
         ])
         
-        messages = [
-            openai_service.create_system_message(
-                "You are a planning agent. Create a brief plan for how to respond to the user's message using the available context."
-            ),
-            openai_service.create_user_message(
-                f"Context:\n{context_text}\n\nUser message: {state_obj.current_message.get('text', '')}\n\nCreate a plan:"
-            )
-        ]
+        if is_summary_request:
+            messages = [
+                openai_service.create_system_message(
+                    "You are a planning agent. Create a plan for summarizing the chat history in a clear, organized way."
+                ),
+                openai_service.create_user_message(
+                    f"Chat History:\n{context_text}\n\nCreate a plan for summarizing this chat history:"
+                )
+            ]
+        else:
+            messages = [
+                openai_service.create_system_message(
+                    "You are a planning agent. Create a brief plan for how to respond to the user's message using the available context."
+                ),
+                openai_service.create_user_message(
+                    f"Context:\n{context_text}\n\nUser message: {state_obj.current_message.get('text', '')}\n\nCreate a plan:"
+                )
+            ]
         
         state_obj.plan = await openai_service.get_completion(messages, temperature=0.7)
         return state_obj.to_dict()
@@ -98,18 +128,34 @@ async def generate_response(state: Union[Dict[str, Any], AgentState]) -> Dict[st
         # Convert to AgentState for type safety
         state_obj = ensure_agent_state(state)
         
+        query_text = state_obj.current_message.get("text", "").lower()
+        is_summary_request = any(
+            keyword in query_text 
+            for keyword in ["summarize", "summary", "summarise", "summarisation", "summarization"]
+        )
+        
         context_text = "\n".join([
-            f"- {msg['text']}" for msg in state_obj.context
+            f"- {msg.get('text', '')}" for msg in state_obj.context if msg.get('text')
         ])
         
-        messages = [
-            openai_service.create_system_message(
-                "You are Inna, a helpful and smart startup co-founder. Respond in a clear, professional manner."
-            ),
-            openai_service.create_user_message(
-                f"Context:\n{context_text}\n\nPlan:\n{state_obj.plan}\n\nUser message: {state_obj.current_message.get('text', '')}\n\nRespond:"
-            )
-        ]
+        if is_summary_request:
+            messages = [
+                openai_service.create_system_message(
+                    "You are Inna, a helpful and smart startup co-founder. Create a clear, well-organized summary of the chat history. Focus on key points, decisions, and important information. Use sections and bullet points for better readability."
+                ),
+                openai_service.create_user_message(
+                    f"Chat History:\n{context_text}\n\nPlan:\n{state_obj.plan}\n\nCreate a comprehensive summary:"
+                )
+            ]
+        else:
+            messages = [
+                openai_service.create_system_message(
+                    "You are Inna, a helpful and smart startup co-founder. Respond in a clear, professional manner."
+                ),
+                openai_service.create_user_message(
+                    f"Context:\n{context_text}\n\nPlan:\n{state_obj.plan}\n\nUser message: {state_obj.current_message.get('text', '')}\n\nRespond:"
+                )
+            ]
         
         state_obj.response = await openai_service.get_completion(messages, temperature=0.7)
         return state_obj.to_dict()
