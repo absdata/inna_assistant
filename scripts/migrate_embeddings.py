@@ -25,6 +25,60 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+async def alter_table_columns():
+    """Alter table columns to use 2000D vectors."""
+    try:
+        logger.info("Altering table columns to use 2000D vectors...")
+        
+        # Drop existing functions first to avoid dependency issues
+        drop_functions_sql = """
+        DROP FUNCTION IF EXISTS match_messages(vector, float, int);
+        DROP FUNCTION IF EXISTS match_agent_memories(vector, text, float, int);
+        DROP FUNCTION IF EXISTS match_agent_memories(vector, text, float, int, timestamp with time zone, timestamp with time zone);
+        """
+        db_service.client.query(drop_functions_sql).execute()
+        logger.info("Dropped existing functions")
+        
+        # Alter tables to use 2000D vectors
+        alter_tables_sql = """
+        -- First, drop existing indexes that depend on the vector columns
+        DROP INDEX IF EXISTS inna_message_embeddings_embedding_idx;
+        
+        -- Alter the tables to use 2000D vectors
+        ALTER TABLE inna_message_embeddings 
+        ALTER COLUMN embedding TYPE vector(2000) USING embedding::vector(2000);
+        
+        ALTER TABLE inna_tasks 
+        ALTER COLUMN embedding TYPE vector(2000) USING 
+        CASE 
+            WHEN embedding IS NULL THEN NULL 
+            ELSE embedding::vector(2000)
+        END;
+        
+        ALTER TABLE inna_summaries 
+        ALTER COLUMN embedding TYPE vector(2000) USING 
+        CASE 
+            WHEN embedding IS NULL THEN NULL 
+            ELSE embedding::vector(2000)
+        END;
+        
+        ALTER TABLE inna_agent_memory 
+        ALTER COLUMN embedding TYPE vector(2000) USING embedding::vector(2000);
+        
+        -- Recreate the index
+        CREATE INDEX inna_message_embeddings_embedding_idx 
+        ON inna_message_embeddings 
+        USING ivfflat (embedding vector_cosine_ops)
+        WITH (lists = 100);
+        """
+        
+        db_service.client.query(alter_tables_sql).execute()
+        logger.info("Successfully altered table columns")
+        
+    except Exception as e:
+        logger.error(f"Error altering table columns: {str(e)}", exc_info=True)
+        raise
+
 async def migrate_embeddings_in_table(table_name: str, embedding_column: str = "embedding"):
     """Migrate embeddings in a specific table."""
     try:
@@ -84,6 +138,9 @@ async def migrate_database():
     """Run the database migration."""
     try:
         logger.info("Starting database migration...")
+        
+        # First, alter table columns
+        await alter_table_columns()
         
         # Update schema to use 2000D vectors
         schema_path = project_root / "database" / "schema.sql"

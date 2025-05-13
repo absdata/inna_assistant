@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from config.config import config
 import logging
 from utils.embedding_compressor import compressor
+import asyncio
 
 # Create logger for this module
 logger = logging.getLogger(__name__)
@@ -23,6 +24,12 @@ class DatabaseService:
             # Enable pgvector extension if not already enabled
             self.client.query("create extension if not exists vector").execute()
             logger.info("Vector extension enabled")
+            
+            # Set up database functions
+            asyncio.run(self.setup_match_messages_function())
+            asyncio.run(self.setup_match_agent_memories_function())
+            logger.info("Database functions updated")
+            
         except Exception as e:
             logger.error(f"Error setting up database: {str(e)}", exc_info=True)
             raise
@@ -712,6 +719,58 @@ class DatabaseService:
             logger.error(f"Error during embedding migration: {str(e)}", exc_info=True)
             raise
 
+    async def setup_match_agent_memories_function(self):
+        """Set up or update the match_agent_memories database function."""
+        try:
+            # First, drop any existing versions of the function
+            drop_sql = """
+            DROP FUNCTION IF EXISTS match_agent_memories(vector, text, float, int);
+            DROP FUNCTION IF EXISTS match_agent_memories(vector, text, float, int, timestamp with time zone, timestamp with time zone);
+            """
+            self.client.query(drop_sql).execute()
+            logger.info("Dropped existing match_agent_memories functions")
+
+            # Create the new function
+            function_sql = """
+            create function match_agent_memories(
+                query_embedding vector(2000),
+                agent_role text,
+                match_threshold float,
+                match_count int,
+                start_time timestamp with time zone default null,
+                end_time timestamp with time zone default null
+            )
+            returns table (
+                id bigint,
+                chat_id bigint,
+                context text,
+                metadata jsonb,
+                similarity float
+            )
+            language sql stable
+            as $$
+                select
+                    inna_agent_memory.id,
+                    inna_agent_memory.chat_id,
+                    inna_agent_memory.context,
+                    inna_agent_memory.metadata,
+                    1 - (inna_agent_memory.embedding <=> query_embedding) as similarity
+                from inna_agent_memory
+                where 
+                    (agent_role is null or inna_agent_memory.agent_role = agent_role)
+                    and 1 - (inna_agent_memory.embedding <=> query_embedding) > match_threshold
+                    and (start_time is null or inna_agent_memory.created_at >= start_time)
+                    and (end_time is null or inna_agent_memory.created_at <= end_time)
+                order by inna_agent_memory.embedding <=> query_embedding
+                limit match_count;
+            $$;
+            """
+            self.client.query(function_sql).execute()
+            logger.info("Successfully created match_agent_memories function")
+        except Exception as e:
+            logger.error(f"Error setting up match_agent_memories function: {str(e)}", exc_info=True)
+            raise
+
     async def get_agent_memories(
         self,
         embedding: List[float],
@@ -727,7 +786,9 @@ class DatabaseService:
         try:
             # Compress query embedding to 2000D
             compressed_embedding = compressor.compress(embedding)
+            logger.debug(f"Original embedding dim: {len(embedding)}, Compressed dim: {len(compressed_embedding)}")
             
+            # Build parameters dictionary
             params = {
                 "query_embedding": compressed_embedding,
                 "agent_role": role,
@@ -735,10 +796,13 @@ class DatabaseService:
                 "match_count": limit
             }
             
-            if start_time:
+            # Only add time parameters if they are provided
+            if start_time is not None:
                 params["start_time"] = start_time.isoformat()
-            if end_time:
+            if end_time is not None:
                 params["end_time"] = end_time.isoformat()
+            
+            logger.debug(f"Calling match_agent_memories with params: {params}")
             
             # Call the match_agent_memories function
             result = self.client.rpc(
