@@ -565,6 +565,9 @@ class DatabaseService:
         """Get relevant agent memories based on embedding similarity."""
         logger.debug(f"Retrieving memories for role: {role}, chat_id: {chat_id}")
         try:
+            # Verify embedding dimensions
+            logger.debug(f"Using embedding with {len(embedding)} dimensions")
+            
             # Build parameters dictionary
             params = {
                 "query_embedding": embedding,  # Already compressed to 2000D by AzureOpenAIService

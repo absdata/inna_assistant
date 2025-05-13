@@ -23,6 +23,11 @@ class EmbeddingCompressor:
     def compress(self, embeddings: List[float]) -> List[float]:
         """Compress embeddings from source to target dimensions using random projection."""
         try:
+            # If already at target dimensions, return as is
+            if len(embeddings) == self.target_dimensions:
+                logger.debug(f"Embedding already at target dimensions ({len(embeddings)}D)")
+                return embeddings
+            
             # Validate input dimensions
             if len(embeddings) != self.source_dimensions:
                 raise ValueError(
@@ -54,6 +59,11 @@ class EmbeddingCompressor:
     def decompress(self, compressed_embedding: List[float]) -> List[float]:
         """Approximate decompression using pseudo-inverse of projection matrix."""
         try:
+            # If at source dimensions, return as is
+            if len(compressed_embedding) == self.source_dimensions:
+                logger.debug(f"Embedding already at source dimensions ({len(compressed_embedding)}D)")
+                return compressed_embedding
+            
             if self.projection_matrix is None:
                 raise ValueError("Compressor must be initialized before decompression")
             
