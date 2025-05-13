@@ -3,7 +3,8 @@
 import asyncio
 from typing import Optional, BinaryIO
 import tempfile
-from telegram import Update, ParseMode
+from telegram import Update
+from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
     ContextTypes,
