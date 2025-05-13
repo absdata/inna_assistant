@@ -21,7 +21,7 @@ class AgentState(BaseModel):
     plan: str = Field(default="")
     response: str = Field(default="")
 
-async def retrieve_context(state: AgentState) -> Tuple[AgentState, str]:
+async def retrieve_context(state: AgentState) -> AgentState:
     """Node 1: Retrieve relevant context from vector store."""
     try:
         # Get embedding for the current message
@@ -35,12 +35,12 @@ async def retrieve_context(state: AgentState) -> Tuple[AgentState, str]:
         )
         
         state.context = similar_messages
-        return state, "decide_next"
+        return state
     except Exception as e:
         logger.error(f"Error in retrieve_context: {str(e)}", exc_info=True)
-        return state, "decide_next"
+        return state
 
-async def create_plan(state: AgentState) -> Tuple[AgentState, str]:
+async def create_plan(state: AgentState) -> AgentState:
     """Node 2: Create a plan for responding to the message."""
     try:
         context_text = "\n".join([
@@ -57,12 +57,12 @@ async def create_plan(state: AgentState) -> Tuple[AgentState, str]:
         ]
         
         state.plan = await openai_service.get_completion(messages, temperature=0.7)
-        return state, "decide_next"
+        return state
     except Exception as e:
         logger.error(f"Error in create_plan: {str(e)}", exc_info=True)
-        return state, "decide_next"
+        return state
 
-async def generate_response(state: AgentState) -> Tuple[AgentState, str]:
+async def generate_response(state: AgentState) -> AgentState:
     """Node 3: Generate the final response."""
     try:
         context_text = "\n".join([
@@ -79,29 +79,22 @@ async def generate_response(state: AgentState) -> Tuple[AgentState, str]:
         ]
         
         state.response = await openai_service.get_completion(messages, temperature=0.7)
-        return state, "decide_next"
+        return state
     except Exception as e:
         logger.error(f"Error in generate_response: {str(e)}", exc_info=True)
-        return state, "decide_next"
+        return state
 
-def decide_next(state: AgentState) -> Dict[str, Callable[[AgentState], bool]]:
-    """Determine the next step based on state."""
-    logger.debug(f"Deciding next step. Context: {bool(state.context)}, Plan: {bool(state.plan)}, Response: {bool(state.response)}")
+def route(state: AgentState) -> str:
+    """Route to the next step based on state."""
+    logger.debug(f"Routing next step. Context: {bool(state.context)}, Plan: {bool(state.plan)}, Response: {bool(state.response)}")
     
-    def should_create_plan(state: AgentState) -> bool:
-        return bool(state.context) and not state.plan
-    
-    def should_generate_response(state: AgentState) -> bool:
-        return bool(state.plan) and not state.response
-    
-    def should_end(state: AgentState) -> bool:
-        return not state.context or bool(state.response)
-    
-    return {
-        "create_plan": should_create_plan,
-        "generate_response": should_generate_response,
-        END: should_end
-    }
+    if not state.context:
+        return END
+    if not state.plan:
+        return "create_plan"
+    if not state.response:
+        return "generate_response"
+    return END
 
 def create_agent() -> Graph:
     """Create the LangGraph agent workflow."""
@@ -112,18 +105,11 @@ def create_agent() -> Graph:
     workflow.add_node("retrieve_context", retrieve_context)
     workflow.add_node("create_plan", create_plan)
     workflow.add_node("generate_response", generate_response)
-    workflow.add_node("decide_next", decide_next)
     
-    # Add edges to decision node
-    workflow.add_edge("retrieve_context", "decide_next")
-    workflow.add_edge("create_plan", "decide_next")
-    workflow.add_edge("generate_response", "decide_next")
-    
-    # Add conditional edges from decision node
-    workflow.add_conditional_edges(
-        "decide_next",
-        decide_next
-    )
+    # Add edges with conditional routing
+    workflow.add_edge("retrieve_context", route)
+    workflow.add_edge("create_plan", route)
+    workflow.add_edge("generate_response", route)
     
     # Set entry point
     workflow.set_entry_point("retrieve_context")
