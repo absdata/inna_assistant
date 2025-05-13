@@ -20,9 +20,18 @@ class AgentState(BaseModel):
     chat_id: int = Field(default=0)
     plan: str = Field(default="")
     response: str = Field(default="")
-    next_step: str = Field(default="retrieve_context")
 
-async def retrieve_context(state: AgentState) -> Tuple[AgentState, str]:
+def get_next_step(state: AgentState) -> str:
+    """Determine the next step in the workflow."""
+    if not state.context:
+        return END
+    if not state.plan:
+        return "create_plan"
+    if not state.response:
+        return "generate_response"
+    return END
+
+async def retrieve_context(state: AgentState) -> AgentState:
     """Node 1: Retrieve relevant context from vector store."""
     try:
         # Get embedding for the current message
@@ -36,13 +45,12 @@ async def retrieve_context(state: AgentState) -> Tuple[AgentState, str]:
         )
         
         state.context = similar_messages
-        state.next_step = "create_plan"
-        return state, "create_plan"
+        return state
     except Exception as e:
         logger.error(f"Error in retrieve_context: {str(e)}", exc_info=True)
-        return state, END
+        return state
 
-async def create_plan(state: AgentState) -> Tuple[AgentState, str]:
+async def create_plan(state: AgentState) -> AgentState:
     """Node 2: Create a plan for responding to the message."""
     try:
         context_text = "\n".join([
@@ -59,13 +67,12 @@ async def create_plan(state: AgentState) -> Tuple[AgentState, str]:
         ]
         
         state.plan = await openai_service.get_completion(messages, temperature=0.7)
-        state.next_step = "generate_response"
-        return state, "generate_response"
+        return state
     except Exception as e:
         logger.error(f"Error in create_plan: {str(e)}", exc_info=True)
-        return state, END
+        return state
 
-async def generate_response(state: AgentState) -> Tuple[AgentState, str]:
+async def generate_response(state: AgentState) -> AgentState:
     """Node 3: Generate the final response."""
     try:
         context_text = "\n".join([
@@ -82,11 +89,10 @@ async def generate_response(state: AgentState) -> Tuple[AgentState, str]:
         ]
         
         state.response = await openai_service.get_completion(messages, temperature=0.7)
-        state.next_step = END
-        return state, END
+        return state
     except Exception as e:
         logger.error(f"Error in generate_response: {str(e)}", exc_info=True)
-        return state, END
+        return state
 
 def create_agent() -> Graph:
     """Create the LangGraph agent workflow."""
@@ -98,10 +104,10 @@ def create_agent() -> Graph:
     workflow.add_node("create_plan", create_plan)
     workflow.add_node("generate_response", generate_response)
     
-    # Add edges
-    workflow.add_edge("retrieve_context", "create_plan")
-    workflow.add_edge("create_plan", "generate_response")
-    workflow.add_edge("generate_response", END)
+    # Add conditional edges
+    workflow.add_edge("retrieve_context", get_next_step)
+    workflow.add_edge("create_plan", get_next_step)
+    workflow.add_edge("generate_response", get_next_step)
     
     # Set entry point
     workflow.set_entry_point("retrieve_context")
