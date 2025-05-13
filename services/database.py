@@ -1,6 +1,7 @@
 from supabase import create_client, Client
 from typing import List, Dict, Optional, Any
 from datetime import datetime, timedelta
+from config.config import config
 import logging
 
 # Create logger for this module
