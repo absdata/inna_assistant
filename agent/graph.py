@@ -52,6 +52,7 @@ async def retrieve_context(state: Union[Dict[str, Any], AgentState]) -> Dict[str
         
         # Get the current message text
         query_text = state_obj.current_message.get("text", "").lower()
+        logger.debug(f"Processing query: {query_text}")
         
         # Check if this is a summarization request
         is_summary_request = any(
@@ -67,34 +68,46 @@ async def retrieve_context(state: Union[Dict[str, Any], AgentState]) -> Dict[str
                 limit=100  # Get last 100 messages
             )
             state_obj.context = chat_history
+            logger.info(f"Retrieved {len(chat_history)} messages for summarization")
         else:
             # For regular queries, get similar messages with lower threshold and higher limit
-            # to ensure we catch file content matches
-            embedding = await openai_service.get_embedding(query_text)
-            similar_messages = await db_service.get_similar_messages(
-                embedding=embedding,
-                chat_id=state_obj.chat_id,
-                threshold=0.5,  # Lower threshold for better recall
-                limit=10  # Increased limit to get more potential matches
-            )
+            logger.info("Regular query detected - retrieving similar messages")
+            try:
+                embedding = await openai_service.get_embedding(query_text)
+                similar_messages = await db_service.get_similar_messages(
+                    embedding=embedding,
+                    chat_id=state_obj.chat_id,
+                    threshold=0.5,  # Lower threshold for better recall
+                    limit=10  # Increased limit to get more potential matches
+                )
+                logger.info(f"Found {len(similar_messages)} similar messages")
+            except Exception as e:
+                logger.error(f"Error getting similar messages: {str(e)}", exc_info=True)
+                similar_messages = []
             
             # Get the full message details for each similar message
             full_messages = []
             for msg in similar_messages:
-                # Get the full message from the messages table
-                result = await db_service.client.table("inna_messages")\
-                    .select("*")\
-                    .eq("id", msg["id"])\
-                    .execute()
-                
-                if result.data:
-                    full_msg = result.data[0]
-                    # If there's file content, add it to the text field for context
-                    if full_msg.get("file_content"):
-                        full_msg["text"] = f"{full_msg.get('text', '')}\n\nFile Content:\n{full_msg['file_content']}"
-                    full_messages.append(full_msg)
+                try:
+                    # Get the full message from the messages table
+                    result = db_service.client.table("inna_messages")\
+                        .select("*")\
+                        .eq("id", msg["id"])\
+                        .execute()
+                    
+                    if result.data:
+                        full_msg = result.data[0]
+                        # If there's file content, add it to the text field for context
+                        if full_msg.get("file_content"):
+                            logger.debug(f"Found file content for message {msg['id']}")
+                            full_msg["text"] = f"{full_msg.get('text', '')}\n\nFile Content:\n{full_msg['file_content']}"
+                        full_messages.append(full_msg)
+                except Exception as e:
+                    logger.error(f"Error getting full message {msg['id']}: {str(e)}", exc_info=True)
+                    continue
             
             state_obj.context = full_messages
+            logger.info(f"Retrieved {len(full_messages)} full messages with content")
             
         return state_obj.to_dict()
     except Exception as e:
