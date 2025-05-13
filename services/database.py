@@ -654,16 +654,22 @@ class DatabaseService:
         try:
             if embedding:
                 # Use vector similarity search
+                params = {
+                    "query_embedding": embedding,
+                    "agent_role": role,
+                    "match_threshold": threshold,
+                    "match_count": limit
+                }
+                
+                # Only add time parameters if they are provided
+                if start_time:
+                    params["start_time"] = start_time.isoformat()
+                if end_time:
+                    params["end_time"] = end_time.isoformat()
+                
                 result = self.client.rpc(
                     "match_agent_memories",
-                    {
-                        "query_embedding": embedding,
-                        "agent_role": role,
-                        "match_threshold": threshold,
-                        "match_count": limit,
-                        "start_time": start_time.isoformat() if start_time else None,
-                        "end_time": end_time.isoformat() if end_time else None
-                    }
+                    params
                 ).execute()
             else:
                 # Use regular query
