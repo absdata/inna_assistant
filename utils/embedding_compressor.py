@@ -1,7 +1,7 @@
-from sklearn.decomposition import PCA
-import numpy as np
 from typing import List
+import numpy as np
 import logging
+from sklearn.random_projection import GaussianRandomProjection
 
 logger = logging.getLogger(__name__)
 
@@ -9,24 +9,25 @@ class EmbeddingCompressor:
     def __init__(self, target_dimensions: int = 2000):
         """Initialize the embedding compressor with target dimensions."""
         self.target_dimensions = target_dimensions
-        self.pca = PCA(n_components=target_dimensions)
-        self.is_fitted = False
+        self.random_projection = GaussianRandomProjection(n_components=target_dimensions, random_state=42)
+        self.projection_matrix = None
         logger.info(f"Initialized embedding compressor with target dimensions: {target_dimensions}")
 
     def compress(self, embeddings: List[float]) -> List[float]:
-        """Compress a single embedding vector to target dimensions."""
+        """Compress a single embedding vector to target dimensions using random projection."""
         try:
-            # Reshape the embedding for PCA
+            # Convert input to numpy array
             embedding_array = np.array(embeddings).reshape(1, -1)
-            
-            # Fit PCA if not already fitted
-            if not self.is_fitted:
-                logger.debug("Fitting PCA model for first use")
-                self.pca.fit(embedding_array)
-                self.is_fitted = True
-            
-            # Transform the embedding
-            compressed = self.pca.transform(embedding_array)
+            original_dim = embedding_array.shape[1]
+
+            # Initialize projection matrix if not already done
+            if self.projection_matrix is None:
+                logger.debug("Initializing random projection matrix")
+                self.random_projection.fit(np.zeros((1, original_dim)))
+                self.projection_matrix = self.random_projection.components_
+
+            # Apply projection
+            compressed = np.dot(embedding_array, self.projection_matrix.T)
             result = compressed.flatten().tolist()
             
             logger.debug(f"Successfully compressed embedding from {len(embeddings)} to {len(result)} dimensions")
@@ -36,13 +37,15 @@ class EmbeddingCompressor:
             raise
 
     def decompress(self, compressed_embedding: List[float]) -> List[float]:
-        """Decompress a compressed embedding back to original dimensions (for comparison if needed)."""
+        """Approximate decompression using pseudo-inverse of projection matrix."""
         try:
-            if not self.is_fitted:
-                raise ValueError("Compressor must be fitted before decompression")
+            if self.projection_matrix is None:
+                raise ValueError("Compressor must be initialized before decompression")
             
             compressed_array = np.array(compressed_embedding).reshape(1, -1)
-            decompressed = self.pca.inverse_transform(compressed_array)
+            # Use pseudo-inverse for approximate reconstruction
+            pseudo_inverse = np.linalg.pinv(self.projection_matrix)
+            decompressed = np.dot(compressed_array, pseudo_inverse)
             result = decompressed.flatten().tolist()
             
             logger.debug(f"Successfully decompressed embedding from {len(compressed_embedding)} to {len(result)} dimensions")
