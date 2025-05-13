@@ -12,8 +12,30 @@ class DatabaseService:
     def __init__(self):
         logger.info("Initializing database service...")
         self.client: Client = create_client(config.supabase_url, config.supabase_key)
+        # Set logging level to DEBUG to see all logs
+        logger.setLevel(logging.DEBUG)
         logger.info("Database service initialized successfully")
     
+    def _log_query(self, operation: str, table: str, params: Dict[str, Any]) -> None:
+        """Log database query details."""
+        logger.debug(
+            f"\n{'='*80}\n"
+            f"DB Operation: {operation}\n"
+            f"Table: {table}\n"
+            f"Parameters: {params}\n"
+            f"{'='*80}"
+        )
+    
+    def _log_result(self, operation: str, result: Any) -> None:
+        """Log database query results."""
+        logger.debug(
+            f"\n{'-'*80}\n"
+            f"Operation Result:\n"
+            f"Status: {'Success' if result and (result.data or result.count is not None) else 'No Data'}\n"
+            f"Data: {result.data if result and hasattr(result, 'data') else result}\n"
+            f"{'-'*80}"
+        )
+
     async def save_message(
         self,
         chat_id: int,
@@ -25,7 +47,6 @@ class DatabaseService:
         file_content: Optional[str] = None
     ) -> Dict[str, Any]:
         """Save a message to the database."""
-        logger.debug(f"Saving message for chat {chat_id}, message_id {message_id}")
         message_data = {
             "chat_id": chat_id,
             "message_id": message_id,
@@ -36,8 +57,12 @@ class DatabaseService:
             "file_content": file_content
         }
         
+        self._log_query("INSERT", "inna_messages", message_data)
+        
         try:
             result = self.client.table("inna_messages").insert(message_data).execute()
+            self._log_result("INSERT", result)
+            
             if result.data:
                 logger.info(f"Message saved successfully with ID: {result.data[0]['id']}")
                 return result.data[0]
@@ -340,59 +365,95 @@ class DatabaseService:
         limit: int = 10
     ) -> List[Dict[str, Any]]:
         """Search messages using both vector similarity and text content."""
-        logger.debug(f"Searching messages for chat {chat_id}")
+        logger.debug(
+            f"\n{'='*80}\n"
+            f"Starting Combined Search:\n"
+            f"Chat ID: {chat_id}\n"
+            f"Text Search: {text_search}\n"
+            f"Threshold: {threshold}\n"
+            f"Limit: {limit}\n"
+            f"{'='*80}"
+        )
+        
         try:
             # First, get similar messages by embedding
+            rpc_params = {
+                "query_embedding": query_embedding,
+                "match_threshold": threshold,
+                "match_count": limit * 2
+            }
+            self._log_query("RPC", "match_messages", rpc_params)
+            
             similar_messages = self.client.rpc(
                 "match_messages",
-                {
-                    "query_embedding": query_embedding,
-                    "match_threshold": threshold,
-                    "match_count": limit * 2  # Get more to filter
-                }
+                rpc_params
             ).execute()
+            
+            self._log_result("Vector Search", similar_messages)
+            logger.debug(f"Vector search found {len(similar_messages.data) if similar_messages.data else 0} matches")
             
             message_ids = [msg["id"] for msg in similar_messages.data] if similar_messages.data else []
             
             # If we have a text search, use it to filter messages
             if text_search and message_ids:
+                logger.debug(f"Performing text search filtering for {len(message_ids)} messages")
+                query_params = {
+                    "chat_id": chat_id,
+                    "message_ids": message_ids
+                }
+                self._log_query("SELECT", "inna_messages", query_params)
+                
                 # Build the query to search in both text and file_content
                 query = self.client.table("inna_messages")\
                     .select("*")\
                     .eq("chat_id", chat_id)\
                     .in_("id", message_ids)
                 
-                # Add text search conditions
-                text_lower = text_search.lower()
                 result = query.execute()
+                self._log_result("Text Search", result)
                 
-                # Filter messages that contain the search text in either text or file_content
+                # Filter messages that contain the search text
+                text_lower = text_search.lower()
                 filtered_messages = []
                 for msg in result.data:
                     text_content = (msg.get("text") or "").lower()
                     file_content = (msg.get("file_content") or "").lower()
                     
                     if text_lower in text_content or text_lower in file_content:
-                        # Find the similarity score from the original results
                         similarity = next(
                             (m["similarity"] for m in similar_messages.data if m["id"] == msg["id"]),
                             0.0
                         )
                         msg["similarity"] = similarity
                         filtered_messages.append(msg)
+                        logger.debug(
+                            f"Match found:\n"
+                            f"ID: {msg['id']}\n"
+                            f"Similarity: {similarity}\n"
+                            f"Has file content: {'Yes' if msg.get('file_content') else 'No'}"
+                        )
                 
-                # Sort by similarity and limit results
                 filtered_messages.sort(key=lambda x: x["similarity"], reverse=True)
-                return filtered_messages[:limit]
+                result_messages = filtered_messages[:limit]
+                logger.debug(f"Final filtered results: {len(result_messages)} messages")
+                return result_messages
             
-            # If no text search, just get the full messages for the similar ones
+            # If no text search, just get the full messages
             if message_ids:
+                logger.debug("Retrieving full message content for vector matches")
+                query_params = {
+                    "message_ids": message_ids
+                }
+                self._log_query("SELECT", "inna_messages", query_params)
+                
                 result = self.client.table("inna_messages")\
                     .select("*")\
                     .in_("id", message_ids)\
                     .execute()
                 
-                # Add similarity scores from the vector search
+                self._log_result("Full Message Retrieval", result)
+                
+                # Add similarity scores
                 full_messages = []
                 for msg in result.data:
                     similarity = next(
@@ -401,11 +462,19 @@ class DatabaseService:
                     )
                     msg["similarity"] = similarity
                     full_messages.append(msg)
+                    logger.debug(
+                        f"Processing message:\n"
+                        f"ID: {msg['id']}\n"
+                        f"Similarity: {similarity}\n"
+                        f"Has file content: {'Yes' if msg.get('file_content') else 'No'}"
+                    )
                 
-                # Sort by similarity and limit results
                 full_messages.sort(key=lambda x: x["similarity"], reverse=True)
-                return full_messages[:limit]
+                result_messages = full_messages[:limit]
+                logger.debug(f"Final results: {len(result_messages)} messages")
+                return result_messages
             
+            logger.debug("No matching messages found")
             return []
             
         except Exception as e:
