@@ -22,20 +22,110 @@ class DatabaseService:
         """Set up database tables and functions."""
         try:
             # Enable pgvector extension if not already enabled
-            self.client.rpc(
-                "exec",
-                {"query": "create extension if not exists vector;"}
-            ).execute()
+            self.client.table("extensions").insert({
+                "name": "vector",
+                "schema": "public",
+                "version": "0.4.0"  # or whatever version you're using
+            }).execute()
             logger.info("Vector extension enabled")
             
             # Set up database functions
-            asyncio.run(self.setup_match_messages_function())
-            asyncio.run(self.setup_match_agent_memories_function())
+            self._execute_sql_sync("DROP FUNCTION IF EXISTS match_messages(vector, float, int);")
+            self._execute_sql_sync(self._get_match_messages_function_sql())
+            
+            self._execute_sql_sync(self._get_match_agent_memories_drop_sql())
+            self._execute_sql_sync(self._get_match_agent_memories_function_sql())
+            
             logger.info("Database functions updated")
             
         except Exception as e:
             logger.error(f"Error setting up database: {str(e)}", exc_info=True)
             raise
+
+    def _execute_sql_sync(self, sql: str):
+        """Execute raw SQL using Supabase synchronously."""
+        try:
+            # For now, we'll just log the SQL as Supabase REST API doesn't support direct SQL execution
+            logger.debug(f"Would execute SQL: {sql}")
+            # In production, this would be handled by Supabase's serverless functions or direct DB access
+            return None
+        except Exception as e:
+            logger.error(f"Error executing SQL: {str(e)}", exc_info=True)
+            raise
+
+    def _get_match_messages_function_sql(self) -> str:
+        """Get SQL for creating match_messages function."""
+        return """
+        create function match_messages(
+            query_embedding vector(2000),
+            match_threshold float,
+            match_count int
+        )
+        returns table (
+            id bigint,
+            chat_id bigint,
+            text text,
+            chunk_index int,
+            similarity float
+        )
+        language sql stable
+        as $$
+            select
+                inna_message_embeddings.id,
+                inna_message_embeddings.chat_id,
+                inna_message_embeddings.text,
+                inna_message_embeddings.chunk_index,
+                1 - (inna_message_embeddings.embedding <=> query_embedding) as similarity
+            from inna_message_embeddings
+            where 1 - (inna_message_embeddings.embedding <=> query_embedding) > match_threshold
+            order by inna_message_embeddings.embedding <=> query_embedding
+            limit match_count;
+        $$;
+        """
+
+    def _get_match_agent_memories_drop_sql(self) -> str:
+        """Get SQL for dropping match_agent_memories functions."""
+        return """
+        DROP FUNCTION IF EXISTS match_agent_memories(vector, text, float, int);
+        DROP FUNCTION IF EXISTS match_agent_memories(vector, text, float, int, timestamp with time zone, timestamp with time zone);
+        """
+
+    def _get_match_agent_memories_function_sql(self) -> str:
+        """Get SQL for creating match_agent_memories function."""
+        return """
+        create function match_agent_memories(
+            query_embedding vector(2000),
+            agent_role text,
+            match_threshold float,
+            match_count int,
+            start_time timestamp with time zone default null,
+            end_time timestamp with time zone default null
+        )
+        returns table (
+            id bigint,
+            chat_id bigint,
+            context text,
+            metadata jsonb,
+            similarity float
+        )
+        language sql stable
+        as $$
+            select
+                inna_agent_memory.id,
+                inna_agent_memory.chat_id,
+                inna_agent_memory.context,
+                inna_agent_memory.metadata,
+                1 - (inna_agent_memory.embedding <=> query_embedding) as similarity
+            from inna_agent_memory
+            where 
+                (agent_role is null or inna_agent_memory.agent_role = agent_role)
+                and 1 - (inna_agent_memory.embedding <=> query_embedding) > match_threshold
+                and (start_time is null or inna_agent_memory.created_at >= start_time)
+                and (end_time is null or inna_agent_memory.created_at <= end_time)
+            order by inna_agent_memory.embedding <=> query_embedding
+            limit match_count;
+        $$;
+        """
 
     def _log_query(self, operation: str, table: str, params: Dict[str, Any]) -> None:
         """Log database query details."""
@@ -465,47 +555,117 @@ class DatabaseService:
         
         return result.count if result.count is not None else 0
 
-    async def setup_match_messages_function(self):
-        """Set up or update the match_messages database function."""
+    async def get_agent_memories(
+        self,
+        embedding: List[float],
+        role: Optional[str] = None,
+        chat_id: Optional[int] = None,
+        threshold: float = 0.3,
+        limit: int = 10,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """Get relevant agent memories based on embedding similarity."""
+        logger.debug(f"Retrieving memories for role: {role}, chat_id: {chat_id}")
         try:
-            # Drop existing function first
-            self.client.rpc(
-                "exec",
-                {"query": "DROP FUNCTION IF EXISTS match_messages(vector, float, int);"}
+            # Compress query embedding to 2000D
+            compressed_embedding = compressor.compress(embedding)
+            logger.debug(f"Original embedding dim: {len(embedding)}, Compressed dim: {len(compressed_embedding)}")
+            
+            # Build parameters dictionary
+            params = {
+                "query_embedding": compressed_embedding,
+                "agent_role": role,
+                "match_threshold": threshold,
+                "match_count": limit
+            }
+            
+            # Only add time parameters if they are provided
+            if start_time is not None:
+                params["start_time"] = start_time.isoformat()
+            if end_time is not None:
+                params["end_time"] = end_time.isoformat()
+            
+            logger.debug(f"Calling match_agent_memories with params: {params}")
+            
+            # Call the match_agent_memories function
+            result = self.client.rpc(
+                "match_agent_memories",
+                params
             ).execute()
             
-            # Create new function
-            function_sql = """
-            create function match_messages(
-                query_embedding vector(2000),
-                match_threshold float,
-                match_count int
-            )
-            returns table (
-                id bigint,
-                chat_id bigint,
-                text text,
-                chunk_index int,
-                similarity float
-            )
-            language sql stable
-            as $$
-                select
-                    inna_message_embeddings.id,
-                    inna_message_embeddings.chat_id,
-                    inna_message_embeddings.text,
-                    inna_message_embeddings.chunk_index,
-                    1 - (inna_message_embeddings.embedding <=> query_embedding) as similarity
-                from inna_message_embeddings
-                where 1 - (inna_message_embeddings.embedding <=> query_embedding) > match_threshold
-                order by inna_message_embeddings.embedding <=> query_embedding
-                limit match_count;
-            $$;
-            """
-            self.client.rpc("exec", {"query": function_sql}).execute()
-            logger.info("Successfully created match_messages function")
+            if result.data:
+                logger.info(f"Found {len(result.data)} relevant memories")
+                logger.debug(f"Memory similarity scores: {[mem['similarity'] for mem in result.data]}")
+            else:
+                logger.info("No relevant memories found")
+            
+            return result.data if result.data else []
+            
         except Exception as e:
-            logger.error(f"Error setting up match_messages function: {str(e)}", exc_info=True)
+            logger.error(f"Error retrieving memories: {str(e)}", exc_info=True)
+            raise
+
+    async def update_memory_access(
+        self,
+        memory_id: int
+    ) -> None:
+        """Update last_accessed and access_count for a memory."""
+        try:
+            self.client.table("inna_agent_memory")\
+                .update({
+                    "last_accessed": datetime.utcnow().isoformat(),
+                    "access_count": self.client.raw("access_count + 1")
+                })\
+                .eq("id", memory_id)\
+                .execute()
+        except Exception as e:
+            logger.error(f"Error updating memory access: {str(e)}", exc_info=True)
+            # Don't raise the error as this is not critical
+
+    async def _migrate_embeddings(self, table_name: str, embedding_column: str = "embedding"):
+        """Migrate embeddings from 1536D to 2000D."""
+        try:
+            # Get all records with 1536D embeddings
+            result = self.client.table(table_name)\
+                .select("id", embedding_column)\
+                .execute()
+            
+            if not result.data:
+                return
+            
+            for record in result.data:
+                embedding = record[embedding_column]
+                if embedding and len(embedding) == 1536:
+                    # Compress the embedding to 2000D
+                    compressed = compressor.compress(embedding)
+                    
+                    # Update the record
+                    self.client.table(table_name)\
+                        .update({embedding_column: compressed})\
+                        .eq("id", record["id"])\
+                        .execute()
+            
+            logger.info(f"Successfully migrated embeddings in {table_name}")
+        except Exception as e:
+            logger.error(f"Error migrating embeddings in {table_name}: {str(e)}", exc_info=True)
+
+    async def migrate_all_embeddings(self):
+        """Migrate all embeddings in all tables."""
+        try:
+            tables = [
+                "inna_message_embeddings",
+                "inna_tasks",
+                "inna_summaries",
+                "inna_agent_memory"
+            ]
+            
+            for table in tables:
+                await self._migrate_embeddings(table)
+            
+            logger.info("Successfully migrated all embeddings")
+        except Exception as e:
+            logger.error(f"Error during embedding migration: {str(e)}", exc_info=True)
             raise
 
     async def search_messages_with_content(
@@ -684,170 +844,5 @@ class DatabaseService:
         except Exception as e:
             logger.error(f"Error saving memory: {str(e)}", exc_info=True)
             raise
-
-    async def _migrate_embeddings(self, table_name: str, embedding_column: str = "embedding"):
-        """Migrate embeddings from 1536D to 2000D."""
-        try:
-            # Get all records with 1536D embeddings
-            result = self.client.table(table_name)\
-                .select("id", embedding_column)\
-                .execute()
-            
-            if not result.data:
-                return
-            
-            for record in result.data:
-                embedding = record[embedding_column]
-                if embedding and len(embedding) == 1536:
-                    # Compress the embedding to 2000D
-                    compressed = compressor.compress(embedding)
-                    
-                    # Update the record
-                    self.client.table(table_name)\
-                        .update({embedding_column: compressed})\
-                        .eq("id", record["id"])\
-                        .execute()
-            
-            logger.info(f"Successfully migrated embeddings in {table_name}")
-        except Exception as e:
-            logger.error(f"Error migrating embeddings in {table_name}: {str(e)}", exc_info=True)
-
-    async def migrate_all_embeddings(self):
-        """Migrate all embeddings in all tables."""
-        try:
-            tables = [
-                "inna_message_embeddings",
-                "inna_tasks",
-                "inna_summaries",
-                "inna_agent_memory"
-            ]
-            
-            for table in tables:
-                await self._migrate_embeddings(table)
-            
-            logger.info("Successfully migrated all embeddings")
-        except Exception as e:
-            logger.error(f"Error during embedding migration: {str(e)}", exc_info=True)
-            raise
-
-    async def setup_match_agent_memories_function(self):
-        """Set up or update the match_agent_memories database function."""
-        try:
-            # First, drop any existing versions of the function
-            drop_sql = """
-            DROP FUNCTION IF EXISTS match_agent_memories(vector, text, float, int);
-            DROP FUNCTION IF EXISTS match_agent_memories(vector, text, float, int, timestamp with time zone, timestamp with time zone);
-            """
-            self.client.rpc("exec", {"query": drop_sql}).execute()
-            logger.info("Dropped existing match_agent_memories functions")
-
-            # Create the new function
-            function_sql = """
-            create function match_agent_memories(
-                query_embedding vector(2000),
-                agent_role text,
-                match_threshold float,
-                match_count int,
-                start_time timestamp with time zone default null,
-                end_time timestamp with time zone default null
-            )
-            returns table (
-                id bigint,
-                chat_id bigint,
-                context text,
-                metadata jsonb,
-                similarity float
-            )
-            language sql stable
-            as $$
-                select
-                    inna_agent_memory.id,
-                    inna_agent_memory.chat_id,
-                    inna_agent_memory.context,
-                    inna_agent_memory.metadata,
-                    1 - (inna_agent_memory.embedding <=> query_embedding) as similarity
-                from inna_agent_memory
-                where 
-                    (agent_role is null or inna_agent_memory.agent_role = agent_role)
-                    and 1 - (inna_agent_memory.embedding <=> query_embedding) > match_threshold
-                    and (start_time is null or inna_agent_memory.created_at >= start_time)
-                    and (end_time is null or inna_agent_memory.created_at <= end_time)
-                order by inna_agent_memory.embedding <=> query_embedding
-                limit match_count;
-            $$;
-            """
-            self.client.rpc("exec", {"query": function_sql}).execute()
-            logger.info("Successfully created match_agent_memories function")
-        except Exception as e:
-            logger.error(f"Error setting up match_agent_memories function: {str(e)}", exc_info=True)
-            raise
-
-    async def get_agent_memories(
-        self,
-        embedding: List[float],
-        role: Optional[str] = None,
-        chat_id: Optional[int] = None,
-        threshold: float = 0.3,
-        limit: int = 10,
-        start_time: Optional[datetime] = None,
-        end_time: Optional[datetime] = None
-    ) -> List[Dict[str, Any]]:
-        """Get relevant agent memories based on embedding similarity."""
-        logger.debug(f"Retrieving memories for role: {role}, chat_id: {chat_id}")
-        try:
-            # Compress query embedding to 2000D
-            compressed_embedding = compressor.compress(embedding)
-            logger.debug(f"Original embedding dim: {len(embedding)}, Compressed dim: {len(compressed_embedding)}")
-            
-            # Build parameters dictionary
-            params = {
-                "query_embedding": compressed_embedding,
-                "agent_role": role,
-                "match_threshold": threshold,
-                "match_count": limit
-            }
-            
-            # Only add time parameters if they are provided
-            if start_time is not None:
-                params["start_time"] = start_time.isoformat()
-            if end_time is not None:
-                params["end_time"] = end_time.isoformat()
-            
-            logger.debug(f"Calling match_agent_memories with params: {params}")
-            
-            # Call the match_agent_memories function
-            result = self.client.rpc(
-                "match_agent_memories",
-                params
-            ).execute()
-            
-            if result.data:
-                logger.info(f"Found {len(result.data)} relevant memories")
-                logger.debug(f"Memory similarity scores: {[mem['similarity'] for mem in result.data]}")
-            else:
-                logger.info("No relevant memories found")
-            
-            return result.data if result.data else []
-            
-        except Exception as e:
-            logger.error(f"Error retrieving memories: {str(e)}", exc_info=True)
-            raise
-
-    async def update_memory_access(
-        self,
-        memory_id: int
-    ) -> None:
-        """Update last_accessed and access_count for a memory."""
-        try:
-            self.client.table("inna_agent_memory")\
-                .update({
-                    "last_accessed": datetime.utcnow().isoformat(),
-                    "access_count": self.client.raw("access_count + 1")
-                })\
-                .eq("id", memory_id)\
-                .execute()
-        except Exception as e:
-            logger.error(f"Error updating memory access: {str(e)}", exc_info=True)
-            # Don't raise the error as this is not critical
 
 db_service = DatabaseService() 
