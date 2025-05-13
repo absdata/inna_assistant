@@ -68,13 +68,33 @@ async def retrieve_context(state: Union[Dict[str, Any], AgentState]) -> Dict[str
             )
             state_obj.context = chat_history
         else:
-            # For regular queries, get similar messages
+            # For regular queries, get similar messages with lower threshold and higher limit
+            # to ensure we catch file content matches
             embedding = await openai_service.get_embedding(query_text)
             similar_messages = await db_service.get_similar_messages(
                 embedding=embedding,
-                chat_id=state_obj.chat_id
+                chat_id=state_obj.chat_id,
+                threshold=0.5,  # Lower threshold for better recall
+                limit=10  # Increased limit to get more potential matches
             )
-            state_obj.context = similar_messages
+            
+            # Get the full message details for each similar message
+            full_messages = []
+            for msg in similar_messages:
+                # Get the full message from the messages table
+                result = await db_service.client.table("inna_messages")\
+                    .select("*")\
+                    .eq("id", msg["id"])\
+                    .execute()
+                
+                if result.data:
+                    full_msg = result.data[0]
+                    # If there's file content, add it to the text field for context
+                    if full_msg.get("file_content"):
+                        full_msg["text"] = f"{full_msg.get('text', '')}\n\nFile Content:\n{full_msg['file_content']}"
+                    full_messages.append(full_msg)
+            
+            state_obj.context = full_messages
             
         return state_obj.to_dict()
     except Exception as e:
@@ -93,9 +113,19 @@ async def create_plan(state: Union[Dict[str, Any], AgentState]) -> Dict[str, Any
             for keyword in ["summarize", "summary", "summarise", "summarisation", "summarization"]
         )
         
-        context_text = "\n".join([
-            f"- {msg.get('text', '')}" for msg in state_obj.context if msg.get('text')
-        ])
+        # Format context with clear separation between messages and file content
+        context_items = []
+        for msg in state_obj.context:
+            if msg.get("text"):
+                # Split text to separate message text from file content
+                text_parts = msg["text"].split("\n\nFile Content:\n")
+                if len(text_parts) > 1:
+                    context_items.append(f"Message: {text_parts[0]}")
+                    context_items.append(f"Attached Document Content: {text_parts[1]}")
+                else:
+                    context_items.append(f"Message: {text_parts[0]}")
+        
+        context_text = "\n\n".join(context_items)
         
         if is_summary_request:
             messages = [
@@ -109,7 +139,7 @@ async def create_plan(state: Union[Dict[str, Any], AgentState]) -> Dict[str, Any
         else:
             messages = [
                 openai_service.create_system_message(
-                    "You are a planning agent. Create a brief plan for how to respond to the user's message using the available context."
+                    "You are a planning agent. Create a brief plan for how to respond to the user's message using the available context. Pay special attention to any document content in the context."
                 ),
                 openai_service.create_user_message(
                     f"Context:\n{context_text}\n\nUser message: {state_obj.current_message.get('text', '')}\n\nCreate a plan:"
@@ -134,9 +164,19 @@ async def generate_response(state: Union[Dict[str, Any], AgentState]) -> Dict[st
             for keyword in ["summarize", "summary", "summarise", "summarisation", "summarization"]
         )
         
-        context_text = "\n".join([
-            f"- {msg.get('text', '')}" for msg in state_obj.context if msg.get('text')
-        ])
+        # Format context with clear separation between messages and file content
+        context_items = []
+        for msg in state_obj.context:
+            if msg.get("text"):
+                # Split text to separate message text from file content
+                text_parts = msg["text"].split("\n\nFile Content:\n")
+                if len(text_parts) > 1:
+                    context_items.append(f"Message: {text_parts[0]}")
+                    context_items.append(f"Attached Document Content: {text_parts[1]}")
+                else:
+                    context_items.append(f"Message: {text_parts[0]}")
+        
+        context_text = "\n\n".join(context_items)
         
         if is_summary_request:
             messages = [
@@ -150,7 +190,7 @@ async def generate_response(state: Union[Dict[str, Any], AgentState]) -> Dict[st
         else:
             messages = [
                 openai_service.create_system_message(
-                    "You are Inna, a helpful and smart startup co-founder. Respond in a clear, professional manner."
+                    "You are Inna, a helpful and smart startup co-founder. Respond in a clear, professional manner. When referencing document content, be specific about which parts you're using to answer the question."
                 ),
                 openai_service.create_user_message(
                     f"Context:\n{context_text}\n\nPlan:\n{state_obj.plan}\n\nUser message: {state_obj.current_message.get('text', '')}\n\nRespond:"
