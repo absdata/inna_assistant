@@ -3,10 +3,16 @@ from typing import List, Dict, Optional, Any
 from datetime import datetime, timedelta
 import numpy as np
 from config.config import config
+import logging
+
+# Create logger for this module
+logger = logging.getLogger(__name__)
 
 class DatabaseService:
     def __init__(self):
+        logger.info("Initializing database service...")
         self.client: Client = create_client(config.supabase_url, config.supabase_key)
+        logger.info("Database service initialized successfully")
     
     async def save_message(
         self,
@@ -19,6 +25,7 @@ class DatabaseService:
         file_content: Optional[str] = None
     ) -> Dict[str, Any]:
         """Save a message to the database."""
+        logger.debug(f"Saving message for chat {chat_id}, message_id {message_id}")
         message_data = {
             "chat_id": chat_id,
             "message_id": message_id,
@@ -29,8 +36,17 @@ class DatabaseService:
             "file_content": file_content
         }
         
-        result = self.client.table("inna_messages").insert(message_data).execute()
-        return result.data[0] if result.data else None
+        try:
+            result = self.client.table("inna_messages").insert(message_data).execute()
+            if result.data:
+                logger.info(f"Message saved successfully with ID: {result.data[0]['id']}")
+                return result.data[0]
+            else:
+                logger.error("Failed to save message: no data returned")
+                return None
+        except Exception as e:
+            logger.error(f"Error saving message: {str(e)}", exc_info=True)
+            raise
 
     async def save_embedding(
         self,
@@ -58,16 +74,27 @@ class DatabaseService:
         limit: int = 5
     ) -> List[Dict[str, Any]]:
         """Get similar messages based on embedding similarity."""
-        result = self.client.rpc(
-            "match_messages",
-            {
-                "query_embedding": embedding,
-                "match_threshold": threshold,
-                "match_count": limit
-            }
-        ).execute()
-        
-        return result.data if result.data else []
+        logger.debug(f"Finding similar messages for chat {chat_id} with threshold {threshold}")
+        try:
+            result = self.client.rpc(
+                "match_messages",
+                {
+                    "query_embedding": embedding,
+                    "match_threshold": threshold,
+                    "match_count": limit
+                }
+            ).execute()
+            
+            if result.data:
+                logger.info(f"Found {len(result.data)} similar messages")
+                logger.debug(f"Similarity scores: {[msg['similarity'] for msg in result.data]}")
+            else:
+                logger.info("No similar messages found")
+            
+            return result.data if result.data else []
+        except Exception as e:
+            logger.error(f"Error finding similar messages: {str(e)}", exc_info=True)
+            raise
 
     async def get_chat_history(
         self,
@@ -103,22 +130,30 @@ class DatabaseService:
 
     async def get_active_chats(self) -> List[Dict[str, Any]]:
         """Get all active chat IDs from the messages table."""
-        # Get unique chat_ids from messages within the last 30 days
-        thirty_days_ago = datetime.utcnow() - timedelta(days=30)
-        result = self.client.table("inna_messages")\
-            .select("chat_id")\
-            .gte("created_at", thirty_days_ago.isoformat())\
-            .execute()
-        
-        # Get unique chat_ids
-        chat_ids = set()
-        chats = []
-        for row in result.data:
-            if row["chat_id"] not in chat_ids:
-                chat_ids.add(row["chat_id"])
-                chats.append({"chat_id": row["chat_id"]})
-        
-        return chats
+        logger.debug("Fetching active chats...")
+        try:
+            # Get unique chat_ids from messages within the last 30 days
+            thirty_days_ago = datetime.utcnow() - timedelta(days=30)
+            result = self.client.table("inna_messages")\
+                .select("chat_id")\
+                .gte("created_at", thirty_days_ago.isoformat())\
+                .execute()
+            
+            # Get unique chat_ids
+            chat_ids = set()
+            chats = []
+            for row in result.data:
+                if row["chat_id"] not in chat_ids:
+                    chat_ids.add(row["chat_id"])
+                    chats.append({"chat_id": row["chat_id"]})
+            
+            logger.info(f"Found {len(chats)} active chats")
+            logger.debug(f"Active chat IDs: {[chat['chat_id'] for chat in chats]}")
+            return chats
+            
+        except Exception as e:
+            logger.error(f"Error fetching active chats: {str(e)}", exc_info=True)
+            raise
 
     async def save_summary(
         self,
