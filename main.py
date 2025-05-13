@@ -7,13 +7,27 @@ from cron.scheduler import scheduler
 from web.app import app
 import logging
 import sys
+from pathlib import Path
+from datetime import datetime
 from contextlib import asynccontextmanager
 
+# Create logs directory if it doesn't exist
+logs_dir = Path("logs")
+logs_dir.mkdir(exist_ok=True)
+
 # Set up detailed logging
+log_filename = logs_dir / f"inna_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+
+# Configure logging format and handlers
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.DEBUG,
-    stream=sys.stdout
+    handlers=[
+        # Console handler
+        logging.StreamHandler(sys.stdout),
+        # File handler
+        logging.FileHandler(log_filename, encoding='utf-8')
+    ]
 )
 
 # Create logger for this module
@@ -23,6 +37,8 @@ logger = logging.getLogger(__name__)
 logging.getLogger('telegram').setLevel(logging.DEBUG)
 logging.getLogger('aiohttp').setLevel(logging.DEBUG)
 logging.getLogger('uvicorn').setLevel(logging.INFO)
+
+logger.info(f"Logging to file: {log_filename}")
 
 @asynccontextmanager
 async def lifespan(app):
