@@ -24,6 +24,19 @@ class AgentState(BaseModel):
     plan: str = Field(default="")
     response: str = Field(default="")
 
+    def dict(self, *args, **kwargs) -> Dict[str, Any]:
+        """Override dict method to ensure proper serialization."""
+        d = super().dict(*args, **kwargs)
+        # Ensure all fields are properly serializable
+        return {
+            "messages": d["messages"],
+            "context": d["context"],
+            "current_message": d["current_message"],
+            "chat_id": d["chat_id"],
+            "plan": d["plan"],
+            "response": d["response"]
+        }
+
 async def retrieve_context(state: Dict[str, Any]) -> Dict[str, Any]:
     """Node 1: Retrieve relevant context from vector store."""
     try:
@@ -41,10 +54,7 @@ async def retrieve_context(state: Dict[str, Any]) -> Dict[str, Any]:
         )
         
         # Return updated state as dict
-        return {
-            **state,
-            "context": similar_messages
-        }
+        return state_obj.dict() | {"context": similar_messages}
     except Exception as e:
         logger.error(f"Error in retrieve_context: {str(e)}", exc_info=True)
         return state
@@ -70,10 +80,7 @@ async def create_plan(state: Dict[str, Any]) -> Dict[str, Any]:
         plan = await openai_service.get_completion(messages, temperature=0.7)
         
         # Return updated state as dict
-        return {
-            **state,
-            "plan": plan
-        }
+        return state_obj.dict() | {"plan": plan}
     except Exception as e:
         logger.error(f"Error in create_plan: {str(e)}", exc_info=True)
         return state
@@ -99,10 +106,7 @@ async def generate_response(state: Dict[str, Any]) -> Dict[str, Any]:
         response = await openai_service.get_completion(messages, temperature=0.7)
         
         # Return updated state as dict
-        return {
-            **state,
-            "response": response
-        }
+        return state_obj.dict() | {"response": response}
     except Exception as e:
         logger.error(f"Error in generate_response: {str(e)}", exc_info=True)
         return state
