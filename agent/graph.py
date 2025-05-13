@@ -7,6 +7,8 @@ import operator
 from pydantic import BaseModel, Field
 from services.azure_openai import openai_service
 from services.database import db_service
+from agent.roles.critic import critic_agent
+from agent.roles.planner import planner_agent
 import logging
 
 # Create logger for this module
@@ -21,6 +23,8 @@ class AgentState(BaseModel):
     plan: str = Field(default="")
     response: str = Field(default="")
     formatted_context: str = Field(default="")
+    criticism: str = Field(default="")  # Store critic's feedback
+    task_updates: str = Field(default="")  # Store planner's task updates
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert state to dictionary format."""
@@ -31,7 +35,9 @@ class AgentState(BaseModel):
             "chat_id": self.chat_id,
             "plan": str(self.plan),
             "response": str(self.response),
-            "formatted_context": str(self.formatted_context)
+            "formatted_context": str(self.formatted_context),
+            "criticism": str(self.criticism),
+            "task_updates": str(self.task_updates)
         }
 
 def ensure_dict_state(state: Union[Dict[str, Any], AgentState]) -> Dict[str, Any]:
@@ -213,8 +219,87 @@ async def create_plan(state: Union[Dict[str, Any], AgentState]) -> Dict[str, Any
         logger.error(f"Error in create_plan: {str(e)}", exc_info=True)
         return ensure_dict_state(state)
 
+async def analyze_with_critic(state: Union[Dict[str, Any], AgentState]) -> Dict[str, Any]:
+    """Node: Analyze the plan with the critic agent."""
+    try:
+        state_obj = ensure_agent_state(state)
+        
+        # Skip criticism for summary requests
+        query_text = state_obj.current_message.get("text", "").lower()
+        is_summary_request = any(
+            keyword in query_text 
+            for keyword in ["summarize", "summary", "summarise", "summarisation", "summarization"]
+        )
+        
+        if is_summary_request:
+            return state_obj.to_dict()
+        
+        # Get criticism from critic agent
+        memory = AgentMemory(
+            messages=state_obj.messages,
+            context=state_obj.context,
+            current_message=state_obj.current_message,
+            chat_id=state_obj.chat_id,
+            role="critic"
+        )
+        
+        criticism = await critic_agent.process(memory)
+        state_obj.criticism = criticism
+        
+        # If there are significant concerns, modify the plan
+        if "high risk" in criticism.lower() or "serious concern" in criticism.lower():
+            messages = [
+                openai_service.create_system_message(
+                    "You are a plan reviser. Review the original plan and the critic's feedback, "
+                    "then create an improved plan that addresses the concerns."
+                ),
+                openai_service.create_user_message(
+                    f"Original Plan:\n{state_obj.plan}\n\n"
+                    f"Critic's Feedback:\n{criticism}\n\n"
+                    "Create an improved plan that addresses these concerns:"
+                )
+            ]
+            state_obj.plan = await openai_service.get_completion(messages)
+        
+        return state_obj.to_dict()
+    except Exception as e:
+        logger.error(f"Error in analyze_with_critic: {str(e)}", exc_info=True)
+        return ensure_dict_state(state)
+
+async def update_tasks_with_planner(state: Union[Dict[str, Any], AgentState]) -> Dict[str, Any]:
+    """Node: Update tasks with the planner agent."""
+    try:
+        state_obj = ensure_agent_state(state)
+        
+        # Skip task planning for summary requests
+        query_text = state_obj.current_message.get("text", "").lower()
+        is_summary_request = any(
+            keyword in query_text 
+            for keyword in ["summarize", "summary", "summarise", "summarisation", "summarization"]
+        )
+        
+        if is_summary_request:
+            return state_obj.to_dict()
+        
+        # Get task updates from planner agent
+        memory = AgentMemory(
+            messages=state_obj.messages,
+            context=state_obj.context,
+            current_message=state_obj.current_message,
+            chat_id=state_obj.chat_id,
+            role="planner"
+        )
+        
+        task_updates = await planner_agent.process(memory)
+        state_obj.task_updates = task_updates
+        
+        return state_obj.to_dict()
+    except Exception as e:
+        logger.error(f"Error in update_tasks_with_planner: {str(e)}", exc_info=True)
+        return ensure_dict_state(state)
+
 async def generate_response(state: Union[Dict[str, Any], AgentState]) -> Dict[str, Any]:
-    """Node 3: Generate the final response."""
+    """Node: Generate the final response."""
     try:
         # Convert to AgentState for type safety
         state_obj = ensure_agent_state(state)
@@ -287,6 +372,15 @@ async def generate_response(state: Union[Dict[str, Any], AgentState]) -> Dict[st
                 )
             ]
         else:
+            # Include critic feedback and task updates in the response generation
+            additional_context = []
+            if state_obj.criticism:
+                additional_context.append(f"Critic's Analysis:\n{state_obj.criticism}")
+            if state_obj.task_updates:
+                additional_context.append(f"Task Updates:\n{state_obj.task_updates}")
+            
+            additional_context_text = "\n\n".join(additional_context) if additional_context else ""
+            
             messages = [
                 openai_service.create_system_message(
                     "You are Inna, a caring and smart startup co-founder with a unique personality:\n"
@@ -305,22 +399,21 @@ async def generate_response(state: Union[Dict[str, Any], AgentState]) -> Dict[st
                     "2. When referencing document content, be specific about which parts you're using\n"
                     "3. Maintain your caring but slightly sassy personality\n"
                     "4. If using multiple sources, clearly organize the information\n"
-                    "5. Use emojis to make your responses more engaging"
-                    
+                    "5. Use emojis to make your responses more engaging\n"
+                    "6. If there are task updates, include them in a clear section\n"
+                    "7. If there are important concerns from the critic, address them thoughtfully"
                 ),
                 openai_service.create_user_message(
                     f"Context:\n{context_text}\n\n"
                     f"Plan:\n{state_obj.plan}\n\n"
+                    f"{additional_context_text}\n\n"
                     f"User message: {state_obj.current_message.get('text', '')}\n\n"
                     "Provide a detailed response:"
                 )
             ]
         
-        state_obj.response = await openai_service.get_completion(
-            messages,
-            temperature=0.7,
-            max_tokens=2000  # Increased for more detailed responses
-        )
+        response = await openai_service.get_completion(messages)
+        state_obj.response = response
         return state_obj.to_dict()
     except Exception as e:
         logger.error(f"Error in generate_response: {str(e)}", exc_info=True)
@@ -335,6 +428,10 @@ def get_next_step(state: Union[Dict[str, Any], AgentState]) -> str:
         return "end"
     if not state_obj.plan:
         return "create_plan"
+    if not state_obj.criticism:
+        return "analyze_with_critic"
+    if not state_obj.task_updates:
+        return "update_tasks_with_planner"
     if not state_obj.response:
         return "generate_response"
     return "end"
@@ -347,6 +444,8 @@ def create_agent() -> Graph:
     # Add nodes
     workflow.add_node("retrieve_context", retrieve_context)
     workflow.add_node("create_plan", create_plan)
+    workflow.add_node("analyze_with_critic", analyze_with_critic)
+    workflow.add_node("update_tasks_with_planner", update_tasks_with_planner)
     workflow.add_node("generate_response", generate_response)
     
     # Add conditional edges with proper routing
@@ -355,6 +454,8 @@ def create_agent() -> Graph:
         get_next_step,
         {
             "create_plan": "create_plan",
+            "analyze_with_critic": "analyze_with_critic",
+            "update_tasks_with_planner": "update_tasks_with_planner",
             "generate_response": "generate_response",
             "end": END
         }
@@ -364,7 +465,27 @@ def create_agent() -> Graph:
         "create_plan",
         get_next_step,
         {
-            "create_plan": "create_plan",
+            "analyze_with_critic": "analyze_with_critic",
+            "update_tasks_with_planner": "update_tasks_with_planner",
+            "generate_response": "generate_response",
+            "end": END
+        }
+    )
+    
+    workflow.add_conditional_edges(
+        "analyze_with_critic",
+        get_next_step,
+        {
+            "update_tasks_with_planner": "update_tasks_with_planner",
+            "generate_response": "generate_response",
+            "end": END
+        }
+    )
+    
+    workflow.add_conditional_edges(
+        "update_tasks_with_planner",
+        get_next_step,
+        {
             "generate_response": "generate_response",
             "end": END
         }
@@ -374,8 +495,6 @@ def create_agent() -> Graph:
         "generate_response",
         get_next_step,
         {
-            "create_plan": "create_plan",
-            "generate_response": "generate_response",
             "end": END
         }
     )

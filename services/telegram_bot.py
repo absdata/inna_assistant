@@ -14,10 +14,11 @@ from telegram.ext import (
 from config.config import config
 from services.database import db_service
 from services.azure_openai import openai_service
-from agent.graph import agent, AgentState
+from agent.graph import agent
 import PyPDF2
 from docx import Document
 import logging
+import re
 
 # Create logger for this module
 logger = logging.getLogger(__name__)
@@ -64,7 +65,6 @@ class TelegramBotService:
         ]
         
         for pattern, replacement in markdown_patterns:
-            import re
             text = re.sub(pattern, replacement, text)
         
         return text

@@ -12,8 +12,8 @@ from contextlib import asynccontextmanager
 # Set up detailed logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.DEBUG,  # Change to DEBUG level for more detailed logs
-    stream=sys.stdout  # Ensure logs go to stdout
+    level=logging.DEBUG,
+    stream=sys.stdout
 )
 
 # Create logger for this module
