@@ -149,26 +149,22 @@ class TelegramBotService:
             
             if should_respond:
                 logger.info("Message addressed to Inna, preparing response...")
-                # Initialize agent state as dictionary
-                state = {
-                    "current_message": saved_message,
-                    "chat_id": chat_id,
-                    "messages": [],
-                    "context": [],
-                    "plan": "",
-                    "response": ""
-                }
+                # Initialize agent state
+                state = AgentState(
+                    current_message=saved_message,
+                    chat_id=chat_id
+                )
                 
                 # Run the agent workflow
                 try:
                     logger.debug("Running agent workflow...")
                     result = await agent.ainvoke(state)
-                    if result and isinstance(result, dict) and result.get("response"):
+                    if result and hasattr(result, "response") and result.response:
                         logger.info("Sending response to user...")
                         for attempt in range(3):  # Try up to 3 times
                             try:
-                                await update.message.reply_text(result["response"])
-                                logger.debug(f"Response sent: {result['response'][:100]}{'...' if len(result['response']) > 100 else ''}")
+                                await update.message.reply_text(result.response)
+                                logger.debug(f"Response sent: {result.response[:100]}{'...' if len(result.response) > 100 else ''}")
                                 break
                             except Exception as reply_error:
                                 if attempt == 2:  # Last attempt
