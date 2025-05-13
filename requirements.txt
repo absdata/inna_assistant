@@ -11,7 +11,7 @@ pydantic>=2.6.1
 asyncio==3.4.3
 aiohttp==3.9.3
 langchain>=0.1.0
-langchain-openai==0.0.8
+langchain-openai>=0.0.11
 langchain-community>=0.0.21
 fastapi==0.109.2
 uvicorn==0.27.1
