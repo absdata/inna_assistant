@@ -15,6 +15,30 @@ class MemoryType(str, Enum):
     DOCUMENT = "document"
     SUMMARY = "summary"
     TASK = "task"
+    CONTEXT = "context"
+    PLANNER = "planner"
+    CRITIC = "critic"
+    RESPONDER = "responder"
+
+    @classmethod
+    def from_role(cls, role: str) -> "MemoryType":
+        """Convert an agent role to a memory type."""
+        try:
+            return cls(role)
+        except ValueError:
+            # If direct conversion fails, try to map common agent roles
+            role_map = {
+                "context": cls.CONTEXT,
+                "planner": cls.PLANNER,
+                "critic": cls.CRITIC,
+                "responder": cls.RESPONDER,
+                # Add more mappings if needed
+            }
+            if role in role_map:
+                return role_map[role]
+            # Default to CHAT type if no mapping exists
+            logger.warning(f"Unknown role type '{role}', defaulting to CHAT")
+            return cls.CHAT
 
 class Memory(BaseModel):
     """Base class for memory entries."""
@@ -110,18 +134,22 @@ class MemoryStore:
             # Convert to Memory objects
             memory_objects = []
             for mem in memories:
-                memory = Memory(
-                    id=mem["id"],
-                    chat_id=chat_id,
-                    content=mem["context"],
-                    memory_type=MemoryType(mem["memory_role"]),
-                    embedding=mem["embedding"],
-                    metadata=mem.get("metadata", {}),
-                    relevance_score=mem["relevance_score"],
-                    created_at=mem["created_at"],
-                    similarity=mem.get("similarity", 0.0)
-                )
-                memory_objects.append(memory)
+                try:
+                    memory = Memory(
+                        id=mem["id"],
+                        chat_id=chat_id,
+                        content=mem["context"],
+                        memory_type=MemoryType.from_role(mem["memory_role"]),
+                        embedding=mem["embedding"],
+                        metadata=mem.get("metadata", {}),
+                        relevance_score=mem["relevance_score"],
+                        created_at=mem["created_at"],
+                        similarity=mem.get("similarity", 0.0)
+                    )
+                    memory_objects.append(memory)
+                except Exception as e:
+                    logger.error(f"Error creating memory object: {str(e)}")
+                    continue
             
             logger.info(f"Retrieved {len(memory_objects)} relevant memories for chat {chat_id}")
             return memory_objects
