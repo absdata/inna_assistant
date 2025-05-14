@@ -288,7 +288,7 @@ def create_agent() -> Graph:
     }
     
     # Initialize workflow with channel config
-    workflow = StateGraph(AgentState, channel_configs=channel_configs)
+    workflow = StateGraph(AgentState)
     
     # Add nodes
     workflow.add_node("check_trigger", check_agent_trigger)
