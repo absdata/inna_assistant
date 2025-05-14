@@ -58,15 +58,65 @@ class DatabaseService:
         self._log_query("INSERT", "inna_messages", message_data)
         
         try:
+            # Save the message
             result = self.client.table("inna_messages").insert(message_data).execute()
             self._log_result("INSERT", result)
             
-            if result.data:
-                logger.info(f"Message saved successfully with ID: {result.data[0]['id']}")
-                return result.data[0]
-            else:
+            if not result.data:
                 logger.error("Failed to save message: no data returned")
                 return None
+            
+            saved_message = result.data[0]
+            logger.info(f"Message saved successfully with ID: {saved_message['id']}")
+            
+            # Process text content if available
+            if text:
+                from services.azure_openai import openai_service
+                embedding = await openai_service.get_embedding(text)
+                await self.save_embedding(
+                    message_id=saved_message['id'],
+                    chat_id=chat_id,
+                    text=text,
+                    embedding=embedding
+                )
+            
+            # Process file content if available
+            if file_content:
+                # Save file content in chunks
+                chunks = await document_processor.process_document(
+                    content=file_content,
+                    source_id=str(saved_message['id']),
+                    source_type="file",
+                    title=file_url
+                )
+                
+                # Save each chunk with its embedding
+                from services.azure_openai import openai_service
+                for chunk in chunks:
+                    chunk_text = chunk['content']
+                    chunk_metadata = chunk['metadata']
+                    
+                    # Get embedding for the chunk
+                    embedding = await openai_service.get_embedding(chunk_text)
+                    
+                    # Save chunk embedding
+                    await self.save_embedding(
+                        message_id=saved_message['id'],
+                        chat_id=chat_id,
+                        text=chunk_text,
+                        embedding=embedding,
+                        chunk_index=chunk_metadata.get('chunk_index'),
+                        section_title=chunk_metadata.get('section_title')
+                    )
+                    
+                    # Save chunk content
+                    await self.save_file_chunks(
+                        message_id=saved_message['id'],
+                        content=chunk_text
+                    )
+            
+            return saved_message
+            
         except Exception as e:
             logger.error(f"Error saving message: {str(e)}", exc_info=True)
             raise
@@ -519,11 +569,9 @@ class DatabaseService:
             rpc_params = {
                 "query_embedding": query_embedding,
                 "match_threshold": threshold,
-                "match_count": limit * 3
+                "match_count": limit * 3,
+                "section_filter": section_title
             }
-            
-            if section_title:
-                rpc_params["section_filter"] = section_title
             
             self._log_query("RPC", "match_messages", rpc_params)
             similar_messages = self.client.rpc("match_messages", rpc_params).execute()
