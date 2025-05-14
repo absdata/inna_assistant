@@ -283,12 +283,12 @@ def is_summary_request(text: str) -> bool:
 def create_agent() -> Graph:
     """Create the agent workflow graph."""
     # Create config for channels that can receive multiple values
-    config = {
+    channel_configs = {
         "messages": {"config": {"type": "multi"}},
     }
     
     # Initialize workflow with channel config
-    workflow = StateGraph(AgentState, config=config)
+    workflow = StateGraph(AgentState, channel_configs=channel_configs)
     
     # Add nodes
     workflow.add_node("check_trigger", check_agent_trigger)
