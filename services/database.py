@@ -98,12 +98,14 @@ class DatabaseService:
             if text:
                 from services.azure_openai import openai_service
                 embedding = await openai_service.get_embedding(text)
-                await self.save_embedding(
-                    message_id=saved_message['id'],
-                    chat_id=chat_id,
-                    text=text,
-                    embedding=embedding
-                )
+                # Save embedding
+                embedding_data = {
+                    "message_id": saved_message['id'],
+                    "chat_id": chat_id,
+                    "text": text,
+                    "embedding": embedding
+                }
+                self.client.table("inna_message_embeddings").insert(embedding_data).execute()
             
             # Process file content if available
             if file_content:
@@ -127,10 +129,8 @@ class DatabaseService:
                 
                 # Save all file chunks in one operation
                 if file_chunks:
-                    await self.save_file_chunks(
-                        message_id=saved_message['id'],
-                        chunks=file_chunks
-                    )
+                    self.client.table("inna_file_chunks").insert(file_chunks).execute()
+                    logger.info(f"Saved {len(file_chunks)} chunks for message {saved_message['id']}")
                 
                 # Save embeddings for each chunk
                 from services.azure_openai import openai_service
@@ -142,14 +142,15 @@ class DatabaseService:
                     embedding = await openai_service.get_embedding(chunk_text)
                     
                     # Save chunk embedding
-                    await self.save_embedding(
-                        message_id=saved_message['id'],
-                        chat_id=chat_id,
-                        text=chunk_text,
-                        embedding=embedding,
-                        chunk_index=chunk_metadata.get('chunk_index'),
-                        section_title=chunk_metadata.get('section_title')
-                    )
+                    embedding_data = {
+                        "message_id": saved_message['id'],
+                        "chat_id": chat_id,
+                        "text": chunk_text,
+                        "embedding": embedding,
+                        "chunk_index": chunk_metadata.get('chunk_index'),
+                        "section_title": chunk_metadata.get('section_title')
+                    }
+                    self.client.table("inna_message_embeddings").insert(embedding_data).execute()
             
             return saved_message
             
