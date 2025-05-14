@@ -270,22 +270,78 @@ def create_agent() -> Graph:
     workflow = StateGraph(AgentState)
     
     # Add nodes
-    workflow.add_node("check_trigger", check_agent_trigger)  # New trigger check node
+    workflow.add_node("check_trigger", check_agent_trigger)
     workflow.add_node("retrieve_context", retrieve_context)
     workflow.add_node("create_plan", create_plan)
     workflow.add_node("analyze_with_critic", analyze_with_critic)
     workflow.add_node("update_tasks_with_planner", update_tasks_with_planner)
     workflow.add_node("generate_response", generate_response)
     
-    # Add edges
-    workflow.add_edge("check_trigger", get_next_step)  # Add edge from trigger check
-    workflow.add_edge("retrieve_context", get_next_step)
-    workflow.add_edge("create_plan", get_next_step)
-    workflow.add_edge("analyze_with_critic", get_next_step)
-    workflow.add_edge("update_tasks_with_planner", get_next_step)
-    workflow.add_edge("generate_response", get_next_step)
+    # Add conditional edges with proper routing
+    workflow.add_conditional_edges(
+        "check_trigger",
+        get_next_step,
+        {
+            "retrieve_context": "retrieve_context",
+            "create_plan": "create_plan",
+            "analyze_with_critic": "analyze_with_critic",
+            "update_tasks_with_planner": "update_tasks_with_planner",
+            "generate_response": "generate_response",
+            END: END
+        }
+    )
     
-    # Set entry point to trigger check
+    workflow.add_conditional_edges(
+        "retrieve_context",
+        get_next_step,
+        {
+            "create_plan": "create_plan",
+            "analyze_with_critic": "analyze_with_critic",
+            "update_tasks_with_planner": "update_tasks_with_planner",
+            "generate_response": "generate_response",
+            END: END
+        }
+    )
+    
+    workflow.add_conditional_edges(
+        "create_plan",
+        get_next_step,
+        {
+            "analyze_with_critic": "analyze_with_critic",
+            "update_tasks_with_planner": "update_tasks_with_planner",
+            "generate_response": "generate_response",
+            END: END
+        }
+    )
+    
+    workflow.add_conditional_edges(
+        "analyze_with_critic",
+        get_next_step,
+        {
+            "update_tasks_with_planner": "update_tasks_with_planner",
+            "generate_response": "generate_response",
+            END: END
+        }
+    )
+    
+    workflow.add_conditional_edges(
+        "update_tasks_with_planner",
+        get_next_step,
+        {
+            "generate_response": "generate_response",
+            END: END
+        }
+    )
+    
+    workflow.add_conditional_edges(
+        "generate_response",
+        get_next_step,
+        {
+            END: END
+        }
+    )
+    
+    # Set entry point
     workflow.set_entry_point("check_trigger")
     
     return workflow.compile()
