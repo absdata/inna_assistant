@@ -1,4 +1,4 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from .base import BaseAgent, AgentMemory
 from services.azure_openai import openai_service
 from services.database import db_service
@@ -63,6 +63,18 @@ class ContextAgent(BaseAgent):
                     sections = msg.get("sections", {})
                     logger.info(f"Processing document with {len(sections)} sections and {len(chunks)} matching chunks")
                     
+                    # Generate document summary if this is a new document upload
+                    if msg.get("id") == memory.current_message.get("message_id") and msg.get("file_content"):
+                        logger.info("Generating summary for newly uploaded document")
+                        summary = await self._generate_document_summary(msg["file_content"])
+                        if summary:
+                            doc_content.append({
+                                "type": "document_summary",
+                                "content": summary,
+                                "relevance": 1.0,  # High relevance for new document
+                                "file_name": msg.get("file_url", "Uploaded document"),
+                                "created_at": msg.get("created_at")
+                            })
                     if sections:
                         relevant_sections = []
                         # Sort sections by similarity
@@ -221,5 +233,28 @@ class ContextAgent(BaseAgent):
             logger.error(f"Error in context retrieval: {str(e)}", exc_info=True)
             memory.context = []
             return ""
+
+    async def _generate_document_summary(self, content: str) -> Optional[str]:
+        """Generate a summary for a document."""
+        try:
+            messages = [
+                openai_service.create_system_message(
+                    "You are a document analyst. Create a concise but comprehensive summary of the document that includes:\n"
+                    "1. Main topics and key points\n"
+                    "2. Important findings or conclusions\n"
+                    "3. Any action items or recommendations\n"
+                    "\nFormat the summary in a clear, structured way using bullet points."
+                ),
+                openai_service.create_user_message(
+                    f"Please summarize this document:\n\n{content}"
+                )
+            ]
+            
+            summary = await openai_service.get_completion(messages)
+            return summary
+            
+        except Exception as e:
+            logger.error(f"Error generating document summary: {str(e)}")
+            return None
 
 context_agent = ContextAgent() 

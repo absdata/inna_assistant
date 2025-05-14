@@ -32,7 +32,12 @@ class ResponderAgent(BaseAgent):
                 "- <pre>text</pre> for pre-formatted blocks\n"
                 "- <a href='URL'>text</a> for links\n"
                 "Do NOT use unsupported HTML tags like <ul>, <li>, <p>, etc.\n"
-                "Use • or - for bullet points instead of HTML lists.\n"
+                "Use • or - for bullet points instead of HTML lists.\n\n"
+                "When responding to a document upload:\n"
+                "1. Start with a friendly acknowledgment\n"
+                "2. Present the document summary in a clear, formatted way\n"
+                "3. Highlight key points and any action items\n"
+                "4. Ask if the user needs any specific information from the document"
             )
             
             # Prepare system message based on request type
@@ -71,6 +76,10 @@ class ResponderAgent(BaseAgent):
                     for section in item["content"]:
                         doc_text += f"Section (Similarity: {section['similarity']:.2f}):\n{section['content']}\n"
                     context_sections.append(doc_text)
+                elif item["type"] == "document_summary":
+                    context_sections.append(
+                        f"Document Summary (New Upload):\n{item['content']}"
+                    )
                 elif item["type"] == "summary":
                     context_sections.append(
                         f"Summary (Relevance: {item['relevance']:.2f}):\n{item['content']}"
