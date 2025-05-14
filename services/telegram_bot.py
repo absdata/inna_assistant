@@ -15,7 +15,7 @@ from config.config import config
 from services.database import db_service
 from services.azure_openai import openai_service
 from services.document_processor import document_processor
-from agent.graph import agent
+from agent.graph import agent, AgentState
 import logging
 import re
 
@@ -181,19 +181,27 @@ class TelegramBotService:
                 )
                 return
             
-            # Process message with agent
-            response = await agent.process_message({
-                "chat_id": chat_id,
-                "message_id": message_id,
-                "user_id": user_id,
-                "username": username,
-                "text": text,
-                "file_url": file_url,
-                "file_content": file_content
-            })
+            # Initialize agent state
+            initial_state = AgentState(
+                messages=[],  # Previous messages if needed
+                context=[],  # Will be populated by retrieve_context
+                current_message={
+                    "chat_id": chat_id,
+                    "message_id": message_id,
+                    "user_id": user_id,
+                    "username": username,
+                    "text": text,
+                    "file_url": file_url,
+                    "file_content": file_content
+                },
+                chat_id=chat_id
+            )
             
-            if response:
-                await update.message.reply_text(response)
+            # Process message with agent
+            result = await agent.ainvoke(initial_state)
+            
+            if result and result.get("response"):
+                await update.message.reply_text(result["response"])
             else:
                 await update.message.reply_text(
                     "I processed your message but couldn't generate a response. Please try again."
