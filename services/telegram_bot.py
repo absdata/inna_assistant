@@ -200,12 +200,14 @@ class TelegramBotService:
             # Process message with agent
             result = await agent.ainvoke(initial_state)
             
-            if result and result.get("response"):
-                await update.message.reply_text(result["response"])
-            else:
-                await update.message.reply_text(
-                    "I processed your message but couldn't generate a response. Please try again."
-                )
+            # Only respond if the agent actually processed the message
+            if result and result.get("should_process"):
+                if result.get("response"):
+                    await update.message.reply_text(result["response"])
+                else:
+                    await update.message.reply_text(
+                        "I processed your message but couldn't generate a response. Please try again."
+                    )
             
         except Exception as e:
             logger.error(f"Error handling message: {str(e)}", exc_info=True)
