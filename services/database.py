@@ -636,6 +636,7 @@ class DatabaseService:
                     avg_similarity = group["total_similarity"] / group["matching_chunk_count"]
                     
                     # Get file chunks with metadata
+                    logger.debug(f"Retrieving file chunks for message {message_id}")
                     file_chunks = self.client.table("inna_file_chunks")\
                         .select("*")\
                         .eq("message_id", message_id)\
@@ -643,23 +644,46 @@ class DatabaseService:
                         .execute()
                     
                     if file_chunks.data:
+                        logger.debug(f"Found {len(file_chunks.data)} chunks for message {message_id}")
                         # Group chunks by section
                         sections = {}
                         for chunk in file_chunks.data:
-                            section = chunk["section_title"] or "Main Content"
+                            section = chunk.get("section_title") or "Main Content"
                             if section not in sections:
                                 sections[section] = []
                             sections[section].append(chunk["chunk_content"])
+                            logger.debug(f"Processing chunk {chunk['chunk_index']} for section '{section}', content length: {len(chunk['chunk_content'])}")
                         
                         # Combine chunks by section
-                        message.data["sections"] = {
-                            title: "".join(contents)
-                            for title, contents in sections.items()
-                        }
+                        message.data["sections"] = {}
+                        for title, contents in sections.items():
+                            section_text = "".join(contents)
+                            logger.debug(f"Section '{title}' combined length: {len(section_text)}")
+                            
+                            # Find matching chunks for this section
+                            section_chunks = [
+                                chunk for chunk in group["chunks"]
+                                if chunk.get("section_title") == title
+                            ]
+                            logger.debug(f"Found {len(section_chunks)} matching chunks for section '{title}'")
+                            
+                            # Calculate section similarity if we have matching chunks
+                            section_similarity = max(
+                                (chunk["similarity"] for chunk in section_chunks),
+                                default=0.0
+                            ) if section_chunks else 0.0
+                            logger.debug(f"Section '{title}' similarity score: {section_similarity:.4f}")
+                            
+                            message.data["sections"][title] = {
+                                "content": section_text,
+                                "similarity": section_similarity
+                            }
                         
-                        # Boost similarity score for messages with file content
-                        if group["matching_chunk_count"] > 1:
-                            avg_similarity *= 1.2
+                        logger.info(f"Processed {len(message.data['sections'])} sections for message {message_id}")
+                    
+                    # Boost similarity score for messages with file content
+                    if group["matching_chunk_count"] > 1:
+                        avg_similarity *= 1.2
                     
                     # Add similarity scores and chunk information
                     message.data["max_similarity"] = group["max_similarity"]

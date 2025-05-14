@@ -52,20 +52,27 @@ class ContextAgent(BaseAgent):
             for msg in messages:
                 relevance = msg.get("final_similarity", 0)
                 
-                if msg.get("file_content"):
+                if msg.get("file_content") or msg.get("sections"):
                     chunks = msg.get("matching_chunks", [])
-                    if chunks:
-                        chunks.sort(key=lambda x: x["similarity"], reverse=True)
+                    sections = msg.get("sections", {})
+                    logger.debug(f"Processing document with {len(sections)} sections and {len(chunks)} matching chunks")
+                    
+                    if sections:
                         relevant_sections = []
+                        # Sort sections by similarity
+                        sorted_sections = sorted(
+                            sections.items(),
+                            key=lambda x: x[1]["similarity"],
+                            reverse=True
+                        )
+                        logger.debug(f"Sorted sections by similarity: {[(title, data['similarity']) for title, data in sorted_sections]}")
                         
-                        for chunk in chunks[:3]:  # Top 3 most relevant chunks
-                            chunk_text = chunk["text"]
-                            if "chunk_" in chunk_text:
-                                chunk_text = chunk_text.split(":", 1)[1].strip()
-                            
+                        for section_title, section_data in sorted_sections[:3]:  # Top 3 most relevant sections
+                            logger.debug(f"Adding section '{section_title}' with similarity {section_data['similarity']:.4f}")
                             relevant_sections.append({
-                                "content": chunk_text,
-                                "similarity": chunk["similarity"]
+                                "content": section_data["content"],
+                                "similarity": section_data["similarity"],
+                                "title": section_title
                             })
                         
                         doc_content.append({
@@ -74,6 +81,7 @@ class ContextAgent(BaseAgent):
                             "created_at": msg.get("created_at"),
                             "file_name": msg.get("file_name", "Unknown Document")
                         })
+                        logger.info(f"Added document '{msg.get('file_name', 'Unknown Document')}' with {len(relevant_sections)} relevant sections")
                 else:
                     chat_messages.append({
                         "text": msg.get("text", ""),
@@ -151,7 +159,7 @@ class ContextAgent(BaseAgent):
                 doc_text = "\n\n".join([
                     f"Document: {doc['file_name']} (Relevance: {doc['relevance']:.2f}):\n" +
                     "\n".join([
-                        f"Section (Similarity: {section['similarity']:.2f}):\n{section['content']}"
+                        f"Section '{section['title']}' (Similarity: {section['similarity']:.2f}):\n{section['content']}"
                         for section in doc["sections"]
                     ])
                     for doc in doc_content[:5]
