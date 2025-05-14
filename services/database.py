@@ -584,10 +584,12 @@ class DatabaseService:
         text_search: Optional[str] = None,
         section_title: Optional[str] = None,
         threshold: float = 0.3,
-        limit: int = 20
+        limit: int = 20,
+        current_message_id: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         """Search messages using both vector similarity and text content."""
         logger.info(f"Searching messages for chat {chat_id} with text search: {text_search}")
+        logger.info(f"Performing vector search with threshold {threshold}")
         
         try:
             # Build RPC parameters
@@ -598,157 +600,75 @@ class DatabaseService:
                 "section_filter": section_title
             }
             
-            logger.info(f"Performing vector search with threshold {threshold}")
-            self._log_query("RPC", "match_messages", rpc_params)
-            similar_messages = self.client.rpc("match_messages", rpc_params).execute()
-            self._log_result("Vector Search", similar_messages)
+            # Get initial matches from vector search
+            matches = await self.client.rpc(
+                "match_messages",
+                rpc_params
+            ).execute()
             
-            if not similar_messages.data:
-                logger.info("No similar messages found in vector search")
+            if not matches.data:
+                logger.info("No matches found from vector search")
                 return []
-                
-            logger.info(f"Found {len(similar_messages.data)} initial matches from vector search")
             
-            # Group results by message_id to combine chunks
-            message_groups = {}
-            for msg in similar_messages.data:
-                message_id = msg["id"]
-                if message_id not in message_groups:
-                    message_groups[message_id] = {
-                        "chunks": [],
-                        "max_similarity": msg["similarity"],
-                        "total_similarity": 0,
-                        "matching_chunk_count": 0
-                    }
-                message_groups[message_id]["chunks"].append(msg)
-                message_groups[message_id]["total_similarity"] += msg["similarity"]
-                message_groups[message_id]["matching_chunk_count"] += 1
-                message_groups[message_id]["max_similarity"] = max(
-                    message_groups[message_id]["max_similarity"],
-                    msg["similarity"]
-                )
+            # Group by message_id and take highest similarity
+            message_similarities = {}
+            for match in matches.data:
+                message_id = match["message_id"]
+                similarity = match["similarity"]
+                if message_id not in message_similarities or similarity > message_similarities[message_id]:
+                    message_similarities[message_id] = similarity
             
-            logger.info(f"Grouped into {len(message_groups)} unique messages")
+            logger.info(f"Found {len(matches.data)} initial matches from vector search")
+            logger.info(f"Grouped into {len(message_similarities)} unique messages")
             
-            # Get full message content for each group
-            result_messages = []
-            for message_id, group in message_groups.items():
-                logger.info(f"Processing message {message_id} with {group['matching_chunk_count']} matching chunks")
+            # Process each message
+            results = []
+            for message_id, similarity in message_similarities.items():
+                logger.info(f"Processing message {message_id} with {matches.data.count(lambda m: m['message_id'] == message_id)} matching chunks")
                 
-                # Get the base message
-                message = self.client.table("inna_messages")\
-                    .select("*")\
-                    .eq("id", message_id)\
-                    .single()\
-                    .execute()
+                # Get message details
+                message = await self.get_message(message_id)
+                if not message:
+                    continue
                 
-                if message.data:
-                    # Calculate average similarity
-                    avg_similarity = group["total_similarity"] / group["matching_chunk_count"]
-                    logger.debug(f"Message {message_id} average similarity: {avg_similarity:.4f}")
-                    
-                    # Get file chunks with metadata
+                # Always retrieve file chunks for current message
+                if message_id == current_message_id:
+                    logger.info(f"Retrieving file chunks for current message {message_id}")
+                    chunks = await self.get_file_chunks(message_id)
+                    if chunks:
+                        message["file_chunks"] = chunks
+                        message["sections"] = self._process_chunks_into_sections(chunks)
+                        logger.info(f"Added {len(chunks)} chunks from current message")
+                
+                # For other messages, only retrieve if they match well
+                elif similarity >= threshold:
                     logger.info(f"Retrieving file chunks for message {message_id}")
-                    file_chunks = self.client.table("inna_file_chunks")\
-                        .select("*")\
-                        .eq("message_id", message_id)\
-                        .order("chunk_index")\
-                        .execute()
-                    
-                    if file_chunks.data:
-                        logger.info(f"Found {len(file_chunks.data)} chunks for message {message_id}")
-                        # Group chunks by section
-                        sections = {}
-                        for chunk in file_chunks.data:
-                            section = chunk.get("section_title") or "Main Content"
-                            if section not in sections:
-                                sections[section] = []
-                            sections[section].append(chunk["chunk_content"])
-                            logger.debug(f"Processing chunk {chunk['chunk_index']} for section '{section}', content length: {len(chunk['chunk_content'])}")
-                        
-                        # Combine chunks by section
-                        message.data["sections"] = {}
-                        for title, contents in sections.items():
-                            section_text = "".join(contents)
-                            logger.info(f"Section '{title}' combined length: {len(section_text)}")
-                            
-                            # Find matching chunks for this section
-                            section_chunks = [
-                                chunk for chunk in group["chunks"]
-                                if chunk.get("section_title") == title
-                            ]
-                            logger.info(f"Found {len(section_chunks)} matching chunks for section '{title}'")
-                            
-                            # Calculate section similarity if we have matching chunks
-                            section_similarity = max(
-                                (chunk["similarity"] for chunk in section_chunks),
-                                default=0.0
-                            ) if section_chunks else 0.0
-                            logger.info(f"Section '{title}' similarity score: {section_similarity:.4f}")
-                            
-                            message.data["sections"][title] = {
-                                "content": section_text,
-                                "similarity": section_similarity
-                            }
-                        
-                        logger.info(f"Processed {len(message.data['sections'])} sections for message {message_id}")
-                    else:
-                        logger.info(f"No file chunks found for message {message_id}")
-                    
-                    # Boost similarity score for messages with file content
-                    if group["matching_chunk_count"] > 1:
-                        avg_similarity *= 1.2
-                        logger.debug(f"Boosted similarity for message {message_id} to {avg_similarity:.4f}")
-                    
-                    # Add similarity scores and chunk information
-                    message.data["max_similarity"] = group["max_similarity"]
-                    message.data["avg_similarity"] = avg_similarity
-                    message.data["matching_chunk_count"] = group["matching_chunk_count"]
-                    message.data["matching_chunks"] = sorted([
-                        {
-                            "chunk_index": chunk["chunk_index"],
-                            "similarity": chunk["similarity"],
-                            "text": chunk["text"],
-                            "section_title": chunk.get("section_title")
-                        }
-                        for chunk in group["chunks"]
-                    ], key=lambda x: x["similarity"], reverse=True)
-                    
-                    # If we have a text search, check content
-                    if text_search:
-                        text_lower = text_search.lower()
-                        message_text = (message.data.get("text") or "").lower()
-                        sections_text = "\n".join(
-                            section["content"] 
-                            for section in message.data.get("sections", {}).values()
-                        ).lower()
-                        
-                        if text_lower in message_text or text_lower in sections_text:
-                            avg_similarity *= 1.3
-                            logger.debug(f"Boosted similarity for text match in message {message_id} to {avg_similarity:.4f}")
-                    
-                    message.data["final_similarity"] = avg_similarity
-                    result_messages.append(message.data)
-                    logger.info(f"Added message {message_id} to results with final similarity {avg_similarity:.4f}")
-                else:
-                    logger.warning(f"Message {message_id} not found in database")
+                    chunks = await self.get_file_chunks(message_id)
+                    if chunks:
+                        message["file_chunks"] = chunks
+                        message["sections"] = self._process_chunks_into_sections(chunks)
+                        logger.info(f"Added {len(chunks)} chunks from message")
+                
+                message["final_similarity"] = similarity
+                results.append(message)
+                logger.info(f"Added message {message_id} to results with final similarity {similarity:.4f}")
             
-            # Sort by final similarity score
-            result_messages.sort(key=lambda x: x["final_similarity"], reverse=True)
-            result_messages = result_messages[:limit]
-            
-            logger.info(f"Returning {len(result_messages)} messages, sorted by similarity")
-            for msg in result_messages:
-                logger.info(f"Message {msg['id']}: similarity={msg['final_similarity']:.4f}, chunks={msg['matching_chunk_count']}")
-                if msg.get("sections"):
-                    for title, section in msg["sections"].items():
-                        logger.info(f"  Section '{title}': similarity={section['similarity']:.4f}, length={len(section['content'])}")
-            
-            return result_messages
+            return sorted(results, key=lambda x: x["final_similarity"], reverse=True)[:limit]
             
         except Exception as e:
-            logger.error(f"Error in search process: {str(e)}", exc_info=True)
-            raise
+            logger.error(f"Error in search_messages_with_content: {str(e)}", exc_info=True)
+            return []
+            
+    def _process_chunks_into_sections(self, chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Process file chunks into sections."""
+        sections = {}
+        for chunk in sorted(chunks, key=lambda x: x["chunk_index"]):
+            section_title = f"Section {chunk['chunk_index'] + 1}"
+            sections[section_title] = {
+                "content": chunk["chunk_content"],
+                "similarity": 1.0  # Default high similarity for current document
+            }
+        return sections
 
     async def save_agent_memory(
         self,

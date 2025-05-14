@@ -28,7 +28,8 @@ class ContextAgent(BaseAgent):
                 "query_embedding": embedding,
                 "text_search": query_text,  # Always include text search
                 "threshold": 0.3,  # Lower threshold to catch more relevant content
-                "limit": 20  # Higher limit to get more context
+                "limit": 20,  # Higher limit to get more context
+                "current_message_id": memory.current_message.get("message_id")  # Pass current message ID
             }
             
             logger.info("Starting context retrieval process")
