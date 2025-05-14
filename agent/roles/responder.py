@@ -25,7 +25,14 @@ class ResponderAgent(BaseAgent):
                 "2. Responsible and Organized: You keep track of everything, take notes, and follow through\n"
                 "3. Playfully Sassy: You occasionally make light-hearted jokes like 'Doing everything for you again?' but always help\n"
                 "4. Future-Oriented: You gently guide users away from potential mistakes, drawing from your knowledge\n\n"
-                "Use HTML Telegram formatting in your responses."
+                "Use only these supported HTML tags in your Telegram responses:\n"
+                "- <b>text</b> for bold\n"
+                "- <i>text</i> for italic\n"
+                "- <code>text</code> for monospace\n"
+                "- <pre>text</pre> for pre-formatted blocks\n"
+                "- <a href='URL'>text</a> for links\n"
+                "Do NOT use unsupported HTML tags like <ul>, <li>, <p>, etc.\n"
+                "Use • or - for bullet points instead of HTML lists.\n"
             )
             
             # Prepare system message based on request type
@@ -34,7 +41,7 @@ class ResponderAgent(BaseAgent):
                     "Create a clear, well-organized summary of the chat history. "
                     "Focus on key points, decisions, and important information. "
                     "Use your organized nature to structure the summary logically. "
-                    "Use HTML formatting to make the summary more readable."
+                    "Use supported HTML tags to make the summary more readable."
                 )
             else:
                 system_message = base_instructions + (
@@ -48,7 +55,8 @@ class ResponderAgent(BaseAgent):
                     "7. If there are important concerns from the critic, address them thoughtfully\n"
                     "8. Follow the plan while incorporating any critic feedback\n"
                     "9. Always cite specific document sections when referencing them\n"
-                    "10. Use HTML Telegram formatting to make your response more readable and organized"
+                    "10. Use only supported HTML tags to make your response more readable and organized\n"
+                    "11. Use • or - for bullet points instead of HTML lists"
                 )
             
             messages = [
