@@ -12,7 +12,10 @@ returns table (
     chat_id bigint,
     context text,
     memory_role text,
+    embedding vector(2000),
     metadata jsonb,
+    relevance_score float,
+    created_at timestamp with time zone,
     similarity float
 )
 language plpgsql
@@ -24,7 +27,10 @@ begin
         inna_agent_memory.chat_id,
         inna_agent_memory.context,
         inna_agent_memory.agent_role as memory_role,
+        inna_agent_memory.embedding,
         inna_agent_memory.metadata,
+        inna_agent_memory.relevance_score,
+        inna_agent_memory.created_at,
         1 - (inna_agent_memory.embedding <=> query_embedding) as similarity
     from inna_agent_memory
     where 

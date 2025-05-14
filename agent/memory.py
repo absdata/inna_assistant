@@ -6,9 +6,21 @@ from services.azure_openai import openai_service
 from services.database import db_service
 import logging
 from enum import Enum
+import re
 
 # Create logger for this module
 logger = logging.getLogger(__name__)
+
+def parse_pg_vector(vector_str: str) -> List[float]:
+    """Convert a PostgreSQL vector string to a list of floats."""
+    try:
+        # Remove brackets and split by commas
+        vector_str = vector_str.strip('[]')
+        # Split and convert to floats
+        return [float(x) for x in vector_str.split(',')]
+    except Exception as e:
+        logger.error(f"Error parsing vector string: {str(e)}, Input: {vector_str}")
+        raise ValueError(f"Invalid vector format: {vector_str}")
 
 class MemoryType(str, Enum):
     CHAT = "chat"
@@ -149,13 +161,20 @@ class MemoryStore:
                         logger.error(f"Memory missing role: {mem}")
                         continue
                     
+                    # Parse the embedding vector
+                    try:
+                        embedding = parse_pg_vector(mem["embedding"])
+                    except ValueError as e:
+                        logger.error(f"Invalid embedding format: {e}")
+                        continue
+                    
                     # Create memory object with validated data
                     memory = Memory(
                         id=memory_id,
                         chat_id=chat_id,
                         content=mem["context"],
                         memory_type=MemoryType.from_role(memory_role),
-                        embedding=mem["embedding"],
+                        embedding=embedding,
                         metadata=mem.get("metadata", {}),
                         relevance_score=mem.get("relevance_score", 1.0),
                         created_at=mem.get("created_at", datetime.utcnow()),
