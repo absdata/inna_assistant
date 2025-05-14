@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 class AgentState(BaseModel):
     """State of the agent during execution."""
-    messages: Annotated[List[Dict[str, str]], "multiple"] = Field(default_factory=list)
+    messages: Annotated[List[Dict[str, str]], operator.add] = Field(default_factory=list)
     context: List[Dict[str, Any]] = Field(default_factory=list)
     current_message: Dict[str, Any] = Field(default_factory=dict)
     chat_id: int = Field(default=0)
