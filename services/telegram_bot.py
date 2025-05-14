@@ -177,7 +177,8 @@ class TelegramBotService:
             if not saved_message:
                 logger.error("Failed to save message")
                 await update.message.reply_text(
-                    "Sorry, I couldn't process your message. Please try again."
+                    "Sorry, I couldn't process your message. Please try again.",
+                    parse_mode=ParseMode.HTML
                 )
                 return
             
@@ -203,16 +204,21 @@ class TelegramBotService:
             # Only respond if the agent actually processed the message
             if result and result.get("should_process"):
                 if result.get("response"):
-                    await update.message.reply_text(result["response"])
+                    await update.message.reply_text(
+                        result["response"],
+                        parse_mode=ParseMode.HTML
+                    )
                 else:
                     await update.message.reply_text(
-                        "I processed your message but couldn't generate a response. Please try again."
+                        "I processed your message but couldn't generate a response. Please try again.",
+                        parse_mode=ParseMode.HTML
                     )
             
         except Exception as e:
             logger.error(f"Error handling message: {str(e)}", exc_info=True)
             await update.message.reply_text(
-                "Sorry, I encountered an error while processing your message. Please try again."
+                "Sorry, I encountered an error while processing your message. Please try again.",
+                parse_mode=ParseMode.HTML
             )
 
 # Create singleton instance
