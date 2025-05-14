@@ -12,26 +12,51 @@ class DatabaseService:
     def __init__(self):
         logger.info("Initializing database service...")
         self.client: Client = create_client(config.supabase_url, config.supabase_key)
-        logger.setLevel(logging.DEBUG)
         logger.info("Database service initialized successfully")
     
     def _log_query(self, operation: str, table: str, params: Dict[str, Any]) -> None:
         """Log database query details."""
+        # Create a copy of params to avoid modifying the original
+        filtered_params = params.copy()
+        
+        # If the table is related to embeddings, simplify the output
+        if 'embedding' in table.lower():
+            if 'embedding' in filtered_params:
+                filtered_params['embedding'] = f'[{len(filtered_params["embedding"])} dimensions]'
+        
         logger.debug(
             f"\n{'='*80}\n"
             f"DB Operation: {operation}\n"
             f"Table: {table}\n"
-            f"Parameters: {params}\n"
+            f"Parameters: {filtered_params}\n"
             f"{'='*80}"
         )
     
     def _log_result(self, operation: str, result: Any) -> None:
         """Log database query results."""
+        # Create a simplified version of the result for logging
+        if hasattr(result, 'data') and result.data:
+            # If dealing with embeddings, simplify the output
+            if isinstance(result.data, list):
+                simplified_data = []
+                for item in result.data:
+                    if isinstance(item, dict):
+                        item_copy = item.copy()
+                        if 'embedding' in item_copy:
+                            item_copy['embedding'] = f'[{len(item_copy["embedding"])} dimensions]'
+                        simplified_data.append(item_copy)
+                    else:
+                        simplified_data.append(item)
+            else:
+                simplified_data = result.data
+        else:
+            simplified_data = result
+        
         logger.debug(
             f"\n{'-'*80}\n"
             f"Operation Result:\n"
             f"Status: {'Success' if result and (result.data or result.count is not None) else 'No Data'}\n"
-            f"Data: {result.data if result and hasattr(result, 'data') else result}\n"
+            f"Data: {simplified_data}\n"
             f"{'-'*80}"
         )
 
