@@ -97,7 +97,11 @@ async def retrieve_context(state: Union[Dict[str, Any], AgentState]) -> Dict[str
             context=state_obj.context,
             current_message=state_obj.current_message,
             chat_id=state_obj.chat_id,
-            role="context"
+            role="context",
+            plan=state_obj.plan,
+            criticism=state_obj.criticism,
+            task_updates=state_obj.task_updates,
+            formatted_context=state_obj.formatted_context
         )
         
         # Get context from context agent
@@ -127,7 +131,11 @@ async def create_plan(state: Union[Dict[str, Any], AgentState]) -> Dict[str, Any
             context=state_obj.context,
             current_message=state_obj.current_message,
             chat_id=state_obj.chat_id,
-            role="planner"
+            role="planner",
+            plan=state_obj.plan,
+            criticism=state_obj.criticism,
+            task_updates=state_obj.task_updates,
+            formatted_context=state_obj.formatted_context
         )
         
         # Get plan from planner agent
@@ -157,8 +165,11 @@ async def analyze_with_critic(state: Union[Dict[str, Any], AgentState]) -> Dict[
             context=state_obj.context,
             current_message=state_obj.current_message,
             chat_id=state_obj.chat_id,
+            role="critic",
             plan=state_obj.plan,
-            role="critic"
+            criticism=state_obj.criticism,
+            task_updates=state_obj.task_updates,
+            formatted_context=state_obj.formatted_context
         )
         
         # Get criticism from critic agent
@@ -184,9 +195,11 @@ async def update_tasks_with_planner(state: Union[Dict[str, Any], AgentState]) ->
             context=state_obj.context,
             current_message=state_obj.current_message,
             chat_id=state_obj.chat_id,
+            role="planner",
             plan=state_obj.plan,
             criticism=state_obj.criticism,
-            role="planner"
+            task_updates=state_obj.task_updates,
+            formatted_context=state_obj.formatted_context
         )
         
         # Get task updates from planner agent
@@ -212,9 +225,11 @@ async def generate_response(state: Union[Dict[str, Any], AgentState]) -> Dict[st
             context=state_obj.context,
             current_message=state_obj.current_message,
             chat_id=state_obj.chat_id,
+            role="responder",
             plan=state_obj.plan,
             criticism=state_obj.criticism,
-            role="responder"
+            task_updates=state_obj.task_updates,
+            formatted_context=state_obj.formatted_context
         )
         
         # Get response from responder agent

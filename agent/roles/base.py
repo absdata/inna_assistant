@@ -14,6 +14,10 @@ class AgentMemory(BaseModel):
     current_message: Dict[str, Any] = Field(default_factory=dict)
     chat_id: int = Field(default=0)
     role: str = Field(default="")
+    plan: str = Field(default="")
+    criticism: str = Field(default="")
+    task_updates: str = Field(default="")
+    formatted_context: str = Field(default="")
 
 class BaseAgent:
     """Base class for all agent roles."""

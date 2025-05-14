@@ -79,6 +79,8 @@ class ResponderAgent(BaseAgent):
                 context_msg += f"\n\nPlan:\n{memory.plan}"
                 if memory.criticism:
                     context_msg += f"\n\nCritic's Feedback:\n{memory.criticism}"
+                if memory.task_updates:
+                    context_msg += f"\n\nTask Updates:\n{memory.task_updates}"
             
             messages.append(openai_service.create_user_message(
                 f"{context_msg}\n\n"
