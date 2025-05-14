@@ -90,7 +90,24 @@ class DatabaseService:
                     title=file_url
                 )
                 
-                # Save each chunk with its embedding
+                # Prepare all file chunks first
+                file_chunks = []
+                for i, chunk in enumerate(chunks):
+                    chunk_text = chunk['content']
+                    file_chunks.append({
+                        "message_id": saved_message['id'],
+                        "chunk_index": i,
+                        "chunk_content": chunk_text
+                    })
+                
+                # Save all file chunks in one operation
+                if file_chunks:
+                    await self.save_file_chunks(
+                        message_id=saved_message['id'],
+                        chunks=file_chunks
+                    )
+                
+                # Save embeddings for each chunk
                 from services.azure_openai import openai_service
                 for chunk in chunks:
                     chunk_text = chunk['content']
@@ -108,12 +125,6 @@ class DatabaseService:
                         chunk_index=chunk_metadata.get('chunk_index'),
                         section_title=chunk_metadata.get('section_title')
                     )
-                    
-                    # Save chunk content
-                    await self.save_file_chunks(
-                        message_id=saved_message['id'],
-                        content=chunk_text
-                    )
             
             return saved_message
             
@@ -124,21 +135,10 @@ class DatabaseService:
     async def save_file_chunks(
         self,
         message_id: int,
-        content: str,
-        chunk_size: int = 100000  # Default chunk size ~100KB of text
+        chunks: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
-        """Save file content in chunks."""
-        logger.info(f"Saving file content in chunks for message {message_id}")
-        chunks = []
-        
-        # Split content into chunks
-        for i in range(0, len(content), chunk_size):
-            chunk_data = {
-                "message_id": message_id,
-                "chunk_index": i // chunk_size,
-                "chunk_content": content[i:i + chunk_size]
-            }
-            chunks.append(chunk_data)
+        """Save file content chunks."""
+        logger.info(f"Saving {len(chunks)} file chunks for message {message_id}")
         
         try:
             # Save all chunks
