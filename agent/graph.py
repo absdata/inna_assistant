@@ -11,6 +11,7 @@ from agent.roles.planner import planner_agent
 from agent.roles.context import context_agent
 from agent.roles.responder import responder_agent
 from agent.roles.base import AgentMemory
+from config.config import config
 import logging
 
 # Create logger for this module
@@ -27,6 +28,7 @@ class AgentState(BaseModel):
     formatted_context: str = Field(default="")
     criticism: str = Field(default="")  # Store critic's feedback
     task_updates: str = Field(default="")  # Store planner's task updates
+    should_process: bool = Field(default=False)  # Flag to indicate if message should be processed
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert state to dictionary format."""
@@ -39,7 +41,8 @@ class AgentState(BaseModel):
             "response": str(self.response),
             "formatted_context": str(self.formatted_context),
             "criticism": str(self.criticism),
-            "task_updates": str(self.task_updates)
+            "task_updates": str(self.task_updates),
+            "should_process": bool(self.should_process)
         }
 
 def ensure_dict_state(state: Union[Dict[str, Any], AgentState]) -> Dict[str, Any]:
@@ -54,10 +57,39 @@ def ensure_agent_state(state: Union[Dict[str, Any], AgentState]) -> AgentState:
         return AgentState(**state)
     return state
 
+def check_agent_trigger(state: Union[Dict[str, Any], AgentState]) -> Dict[str, Any]:
+    """Check if the message should trigger the agent."""
+    try:
+        state_obj = ensure_agent_state(state)
+        message_text = state_obj.current_message.get("text", "").lower()
+        
+        # Check if message starts with any of the agent name triggers
+        state_obj.should_process = any(
+            message_text.startswith(trigger.lower())
+            for trigger in config.agent_name_triggers
+        )
+        
+        if state_obj.should_process:
+            # Remove the trigger from the message text
+            for trigger in config.agent_name_triggers:
+                if message_text.startswith(trigger.lower()):
+                    cleaned_text = message_text[len(trigger):].strip(" ,")
+                    state_obj.current_message["text"] = cleaned_text
+                    break
+        
+        return state_obj.to_dict()
+    except Exception as e:
+        logger.error(f"Error in check_agent_trigger: {str(e)}", exc_info=True)
+        return ensure_dict_state(state)
+
 async def retrieve_context(state: Union[Dict[str, Any], AgentState]) -> Dict[str, Any]:
     """Node 1: Retrieve relevant context from vector store."""
     try:
         state_obj = ensure_agent_state(state)
+        
+        # Skip if we shouldn't process this message
+        if not state_obj.should_process:
+            return state_obj.to_dict()
         
         # Create memory object for context agent
         memory = AgentMemory(
@@ -83,6 +115,10 @@ async def create_plan(state: Union[Dict[str, Any], AgentState]) -> Dict[str, Any
     try:
         state_obj = ensure_agent_state(state)
         
+        # Skip if we shouldn't process this message
+        if not state_obj.should_process:
+            return state_obj.to_dict()
+        
         # Create memory object for planner agent
         memory = AgentMemory(
             messages=state_obj.messages,
@@ -104,6 +140,10 @@ async def analyze_with_critic(state: Union[Dict[str, Any], AgentState]) -> Dict[
     """Node 3: Analyze the plan with the critic agent."""
     try:
         state_obj = ensure_agent_state(state)
+        
+        # Skip if we shouldn't process this message
+        if not state_obj.should_process:
+            return state_obj.to_dict()
         
         # Skip criticism for summary requests
         if is_summary_request(state_obj.current_message.get("text", "")):
@@ -132,6 +172,10 @@ async def update_tasks_with_planner(state: Union[Dict[str, Any], AgentState]) ->
     try:
         state_obj = ensure_agent_state(state)
         
+        # Skip if we shouldn't process this message
+        if not state_obj.should_process:
+            return state_obj.to_dict()
+        
         # Create memory object for planner agent (task update mode)
         memory = AgentMemory(
             messages=state_obj.messages,
@@ -156,6 +200,10 @@ async def generate_response(state: Union[Dict[str, Any], AgentState]) -> Dict[st
     try:
         state_obj = ensure_agent_state(state)
         
+        # Skip if we shouldn't process this message
+        if not state_obj.should_process:
+            return state_obj.to_dict()
+        
         # Create memory object for responder agent
         memory = AgentMemory(
             messages=state_obj.messages,
@@ -179,6 +227,10 @@ def get_next_step(state: Union[Dict[str, Any], AgentState]) -> str:
     """Determine the next step in the workflow."""
     try:
         state_obj = ensure_agent_state(state)
+        
+        # If we shouldn't process this message, end immediately
+        if not state_obj.should_process:
+            return END
         
         # Check if this is a summary request
         if is_summary_request(state_obj.current_message.get("text", "")):
@@ -218,6 +270,7 @@ def create_agent() -> Graph:
     workflow = StateGraph(AgentState)
     
     # Add nodes
+    workflow.add_node("check_trigger", check_agent_trigger)  # New trigger check node
     workflow.add_node("retrieve_context", retrieve_context)
     workflow.add_node("create_plan", create_plan)
     workflow.add_node("analyze_with_critic", analyze_with_critic)
@@ -225,14 +278,15 @@ def create_agent() -> Graph:
     workflow.add_node("generate_response", generate_response)
     
     # Add edges
+    workflow.add_edge("check_trigger", get_next_step)  # Add edge from trigger check
     workflow.add_edge("retrieve_context", get_next_step)
     workflow.add_edge("create_plan", get_next_step)
     workflow.add_edge("analyze_with_critic", get_next_step)
     workflow.add_edge("update_tasks_with_planner", get_next_step)
     workflow.add_edge("generate_response", get_next_step)
     
-    # Set entry point
-    workflow.set_entry_point("retrieve_context")
+    # Set entry point to trigger check
+    workflow.set_entry_point("check_trigger")
     
     return workflow.compile()
 
