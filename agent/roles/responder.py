@@ -48,7 +48,7 @@ class ResponderAgent(BaseAgent):
                     "7. If there are important concerns from the critic, address them thoughtfully\n"
                     "8. Follow the plan while incorporating any critic feedback\n"
                     "9. Always cite specific document sections when referencing them\n"
-                    "10. Use HTML formatting to make your response more readable and organized"
+                    "10. Use HTML Telegram formatting to make your response more readable and organized"
                 )
             
             messages = [
