@@ -62,6 +62,12 @@ def check_agent_trigger(state: Union[Dict[str, Any], AgentState]) -> Dict[str, A
     try:
         state_obj = ensure_agent_state(state)
         message_text = state_obj.current_message.get("text", "").lower()
+        file_content = state_obj.current_message.get("file_content")
+        
+        # Always process if there's a document
+        if file_content:
+            state_obj.should_process = True
+            return state_obj.to_dict()
         
         # Check if message starts with any of the agent name triggers
         state_obj.should_process = any(
@@ -249,6 +255,22 @@ def get_next_step(state: Union[Dict[str, Any], AgentState]) -> str:
         if not state_obj.should_process:
             return END
         
+        # Check if this is a document upload
+        has_document = bool(state_obj.current_message.get("file_content"))
+        if has_document:
+            if state_obj.response:
+                return END
+            elif state_obj.task_updates:
+                return "generate_response"
+            elif state_obj.criticism:
+                return "update_tasks_with_planner"
+            elif state_obj.plan:
+                return "analyze_with_critic"
+            elif state_obj.context:
+                return "create_plan"
+            else:
+                return "retrieve_context"
+        
         # Check if this is a summary request
         if is_summary_request(state_obj.current_message.get("text", "")):
             if state_obj.response:
@@ -362,65 +384,6 @@ def create_agent() -> Graph:
     workflow.set_entry_point("check_trigger")
     
     return workflow.compile()
-
-# Create the agent instance
-agent = create_agent()
-
-class AgentGraph:
-    async def ainvoke(self, state: AgentState) -> Dict[str, Any]:
-        """Process the current state through the agent graph."""
-        try:
-            # Always process if there's a document upload
-            has_document = bool(state.current_message.get("file_content"))
-            
-            # Get context first
-            context = await context_agent.process(state)
-            state.context = context
-            
-            # Always proceed if there's a document or meaningful query
-            should_process = has_document or bool(state.current_message.get("text", "").strip())
-            
-            if should_process:
-                # Get critic's feedback
-                criticism = await critic_agent.process(state)
-                state.criticism = criticism
-                
-                # Get planner's input
-                plan = await planner_agent.process(state)
-                state.plan = plan
-                
-                # Generate response
-                response = await responder_agent.process(state)
-                
-                return {
-                    "should_process": True,
-                    "response": response,
-                    "context": context,
-                    "criticism": criticism,
-                    "plan": plan
-                }
-            
-            return {
-                "should_process": False,
-                "response": None,
-                "context": context,
-                "criticism": None,
-                "plan": None
-            }
-            
-        except Exception as e:
-            logger.error(f"Error in agent graph: {str(e)}", exc_info=True)
-            return {
-                "should_process": False,
-                "response": "I encountered an error while processing. Please try again.",
-                "context": None,
-                "criticism": None,
-                "plan": None
-            }
-
-def create_agent() -> AgentGraph:
-    """Create and return an instance of the agent graph."""
-    return AgentGraph()
 
 # Create the agent instance
 agent = create_agent()
