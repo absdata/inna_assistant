@@ -13,7 +13,7 @@ from agent.roles.responder import responder_agent
 from agent.roles.base import AgentMemory
 from config.config import config
 import logging
-from langgraph.channels import Accumulate
+import operator
 from typing import Annotated
 
 # Create logger for this module
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 class AgentState(BaseModel):
     """State of the agent during execution."""
     messages: Annotated[List[Dict[str, str]], operator.add] = Field(default_factory=list)
-    context: Annotated[List[Dict[str, Any]], Accumulate] = Field(default_factory=list)
+    context: Annotated[List[Dict[str, Any]], operator.add] = Field(default_factory=list)
     current_message: Dict[str, Any] = Field(default_factory=dict)
     chat_id: int = Field(default=0)
     plan: str = Field(default="")
