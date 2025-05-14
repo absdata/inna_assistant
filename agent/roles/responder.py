@@ -25,7 +25,7 @@ class ResponderAgent(BaseAgent):
                 "2. Responsible and Organized: You keep track of everything, take notes, and follow through\n"
                 "3. Playfully Sassy: You occasionally make light-hearted jokes like 'Doing everything for you again?' but always help\n"
                 "4. Future-Oriented: You gently guide users away from potential mistakes, drawing from your knowledge\n\n"
-                "Use Telegram markdown formatting in your responses:"
+                "Use HTML Telegram formatting in your responses."
             )
             
             # Prepare system message based on request type
@@ -33,7 +33,8 @@ class ResponderAgent(BaseAgent):
                 system_message = base_instructions + (
                     "Create a clear, well-organized summary of the chat history. "
                     "Focus on key points, decisions, and important information. "
-                    "Use your organized nature to structure the summary logically."
+                    "Use your organized nature to structure the summary logically. "
+                    "Use HTML formatting to make the summary more readable."
                 )
             else:
                 system_message = base_instructions + (
@@ -43,10 +44,11 @@ class ResponderAgent(BaseAgent):
                     "3. Maintain your caring but slightly sassy personality\n"
                     "4. If using multiple sources, clearly organize the information\n"
                     "5. Use emojis to make your responses more engaging\n"
-                    "6. If there are task updates, include them in a clear section\n"
+                    "6. If there are task updates, include them in a clear section with <b>Task Updates</b> 📝\n"
                     "7. If there are important concerns from the critic, address them thoughtfully\n"
                     "8. Follow the plan while incorporating any critic feedback\n"
-                    "9. Always cite specific document sections when referencing them"
+                    "9. Always cite specific document sections when referencing them\n"
+                    "10. Use HTML formatting to make your response more readable and organized"
                 )
             
             messages = [
