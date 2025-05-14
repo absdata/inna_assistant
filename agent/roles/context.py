@@ -103,8 +103,49 @@ class ContextAgent(BaseAgent):
             summaries.sort(key=lambda x: x["relevance"], reverse=True)
             agent_insights.sort(key=lambda x: x["relevance"], reverse=True)
             
-            # Format the context sections
-            context_sections = []
+            # Create context list
+            context_list = []
+            
+            # Add documents to context
+            for doc in doc_content[:5]:  # Top 5 most relevant documents
+                context_list.append({
+                    "type": "document",
+                    "content": doc["sections"],
+                    "relevance": doc["relevance"],
+                    "file_name": doc["file_name"],
+                    "created_at": doc["created_at"]
+                })
+            
+            # Add summaries to context
+            for summary in summaries[:3]:  # Top 3 most relevant summaries
+                context_list.append({
+                    "type": "summary",
+                    "content": summary["text"],
+                    "relevance": summary["relevance"],
+                    "created_at": summary["created_at"]
+                })
+            
+            # Add agent insights to context
+            for insight in agent_insights[:3]:  # Top 3 most relevant insights
+                context_list.append({
+                    "type": "agent_insight",
+                    "content": insight["text"],
+                    "relevance": insight["relevance"],
+                    "insight_type": insight["type"],
+                    "created_at": insight["created_at"]
+                })
+            
+            # Add chat messages to context
+            for msg in chat_messages[:5]:  # Top 5 most relevant messages
+                context_list.append({
+                    "type": "chat",
+                    "content": msg["text"],
+                    "relevance": msg["relevance"],
+                    "created_at": msg["created_at"]
+                })
+            
+            # Format the context for display
+            formatted_sections = []
             
             if doc_content:
                 doc_text = "\n\n".join([
@@ -113,32 +154,32 @@ class ContextAgent(BaseAgent):
                         f"Section (Similarity: {section['similarity']:.2f}):\n{section['content']}"
                         for section in doc["sections"]
                     ])
-                    for doc in doc_content[:5]  # Top 5 most relevant documents
+                    for doc in doc_content[:5]
                 ])
-                context_sections.append("### Document Content ###\n" + doc_text)
+                formatted_sections.append("### Document Content ###\n" + doc_text)
             
             if summaries:
                 summary_text = "\n\n".join([
                     f"Summary (Relevance: {summary['relevance']:.2f}):\n{summary['text']}"
-                    for summary in summaries[:3]  # Top 3 most relevant summaries
+                    for summary in summaries[:3]
                 ])
-                context_sections.append("### Recent Summaries ###\n" + summary_text)
+                formatted_sections.append("### Recent Summaries ###\n" + summary_text)
             
             if agent_insights:
                 insight_text = "\n\n".join([
                     f"Agent {insight['type'].title()} (Relevance: {insight['relevance']:.2f}):\n{insight['text']}"
-                    for insight in agent_insights[:3]  # Top 3 most relevant insights
+                    for insight in agent_insights[:3]
                 ])
-                context_sections.append("### Agent Insights ###\n" + insight_text)
+                formatted_sections.append("### Agent Insights ###\n" + insight_text)
             
             if chat_messages:
                 msg_text = "\n\n".join([
                     f"Message (Relevance: {msg['relevance']:.2f}):\n{msg['text']}"
-                    for msg in chat_messages[:5]  # Top 5 most relevant messages
+                    for msg in chat_messages[:5]
                 ])
-                context_sections.append("### Chat Messages ###\n" + msg_text)
+                formatted_sections.append("### Chat Messages ###\n" + msg_text)
             
-            formatted_context = "\n\n".join(context_sections)
+            formatted_context = "\n\n".join(formatted_sections)
             
             # Save the context to memory
             await self.save_memory(
@@ -146,10 +187,13 @@ class ContextAgent(BaseAgent):
                 context=f"Retrieved Context:\n{formatted_context}"
             )
             
+            # Return both the formatted string and the structured context list
+            memory.context = context_list
             return formatted_context
             
         except Exception as e:
             logger.error(f"Error in context retrieval: {str(e)}", exc_info=True)
+            memory.context = []
             return ""
 
 context_agent = ContextAgent() 
