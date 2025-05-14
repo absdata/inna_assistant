@@ -611,11 +611,20 @@ class DatabaseService:
                 logger.info("No matches found from vector search")
                 return []
             
+            # Log the first match to debug field names
+            if matches.data:
+                logger.debug(f"First match structure: {matches.data[0]}")
+            
             # Group by message_id and take highest similarity
             message_similarities = {}
             for match in matches.data:
-                message_id = match["message_id"]
-                similarity = match["similarity"]
+                # The field might be 'id' or 'message_id' depending on the RPC function
+                message_id = match.get("id") or match.get("message_id")
+                if not message_id:
+                    logger.warning(f"Match missing message ID: {match}")
+                    continue
+                    
+                similarity = match.get("similarity", 0.0)
                 if message_id not in message_similarities or similarity > message_similarities[message_id]:
                     message_similarities[message_id] = similarity
             
