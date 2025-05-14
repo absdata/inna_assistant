@@ -185,26 +185,27 @@ class TelegramBotService:
             # Initialize agent state
             initial_state = AgentState(
                 messages=[{
-                    "chat_id": chat_id,
-                    "message_id": message_id,
-                    "user_id": user_id,
-                    "username": username,
-                    "text": text or "Please analyze this document",  # Default text for document uploads
-                    "file_url": file_url,
-                    "file_content": file_content
-                }],  # Initialize with current message in list
-                context=[],  # Will be populated by retrieve_context
+                    "chat_id": str(chat_id),
+                    "message_id": str(message_id),
+                    "user_id": str(user_id),
+                    "username": username or "",
+                    "text": text or "Please analyze this document",
+                    "file_url": file_url or "",
+                    "file_content": file_content or ""
+                }],
+                context=[],
                 current_message={
-                    "chat_id": chat_id,
-                    "message_id": message_id,
-                    "user_id": user_id,
-                    "username": username,
-                    "text": text or "Please analyze this document",  # Default text for document uploads
-                    "file_url": file_url,
-                    "file_content": file_content
+                    "chat_id": str(chat_id),
+                    "message_id": str(message_id),
+                    "user_id": str(user_id),
+                    "username": username or "",
+                    "text": text or "Please analyze this document",
+                    "file_url": file_url or "",
+                    "file_content": file_content or ""
                 },
-                chat_id=chat_id
+                chat_id=chat_id  # можно оставить как int, если поле так описано в Pydantic
             )
+
             
             # Always process with agent for both text messages and document uploads
             result = await agent.ainvoke(initial_state)
