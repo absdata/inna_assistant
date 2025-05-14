@@ -255,46 +255,22 @@ def get_next_step(state: Union[Dict[str, Any], AgentState]) -> str:
         if not state_obj.should_process:
             return END
         
-        # Check if this is a document upload
-        has_document = bool(state_obj.current_message.get("file_content"))
-        if has_document:
-            if state_obj.response:
-                return END
-            elif state_obj.task_updates:
-                return "generate_response"
-            elif state_obj.criticism:
-                return "update_tasks_with_planner"
-            elif state_obj.plan:
-                return "analyze_with_critic"
-            elif state_obj.context:
-                return "create_plan"
-            else:
-                return "retrieve_context"
-        
-        # Check if this is a summary request
-        if is_summary_request(state_obj.current_message.get("text", "")):
-            if state_obj.response:
-                return END
-            elif state_obj.plan:
-                return "generate_response"
-            elif state_obj.context:
-                return "create_plan"
-            else:
-                return "retrieve_context"
-        
-        # Normal flow
+        # If we have a response, we're done
         if state_obj.response:
             return END
-        elif state_obj.task_updates:
-            return "generate_response"
-        elif state_obj.criticism:
-            return "update_tasks_with_planner"
-        elif state_obj.plan:
-            return "analyze_with_critic"
-        elif state_obj.context:
-            return "create_plan"
-        else:
-            return "retrieve_context"
+        
+        # For document uploads and summary requests, we can skip some steps
+        has_document = bool(state_obj.current_message.get("file_content"))
+        is_summary = is_summary_request(state_obj.current_message.get("text", ""))
+        
+        if has_document or is_summary:
+            if state_obj.context:
+                return "generate_response"
+            return END
+        
+        # Normal flow - follow the graph edges
+        return END
+            
     except Exception as e:
         logger.error(f"Error in get_next_step: {str(e)}", exc_info=True)
         return END
@@ -316,16 +292,22 @@ def create_agent() -> Graph:
     workflow.add_node("update_tasks_with_planner", update_tasks_with_planner)
     workflow.add_node("generate_response", generate_response)
     
-    # Add conditional edges with proper routing
+    # Set entry point
+    workflow.set_entry_point("check_trigger")
+    
+    # Add edges for the workflow
+    workflow.add_edge("check_trigger", "retrieve_context")
+    workflow.add_edge("retrieve_context", "create_plan")
+    workflow.add_edge("create_plan", "analyze_with_critic")
+    workflow.add_edge("analyze_with_critic", "update_tasks_with_planner")
+    workflow.add_edge("update_tasks_with_planner", "generate_response")
+    workflow.add_edge("generate_response", END)
+    
+    # Add conditional edges for early exits
     workflow.add_conditional_edges(
         "check_trigger",
         get_next_step,
         {
-            "retrieve_context": "retrieve_context",
-            "create_plan": "create_plan",
-            "analyze_with_critic": "analyze_with_critic",
-            "update_tasks_with_planner": "update_tasks_with_planner",
-            "generate_response": "generate_response",
             END: END
         }
     )
@@ -334,9 +316,6 @@ def create_agent() -> Graph:
         "retrieve_context",
         get_next_step,
         {
-            "create_plan": "create_plan",
-            "analyze_with_critic": "analyze_with_critic",
-            "update_tasks_with_planner": "update_tasks_with_planner",
             "generate_response": "generate_response",
             END: END
         }
@@ -346,8 +325,6 @@ def create_agent() -> Graph:
         "create_plan",
         get_next_step,
         {
-            "analyze_with_critic": "analyze_with_critic",
-            "update_tasks_with_planner": "update_tasks_with_planner",
             "generate_response": "generate_response",
             END: END
         }
@@ -357,7 +334,6 @@ def create_agent() -> Graph:
         "analyze_with_critic",
         get_next_step,
         {
-            "update_tasks_with_planner": "update_tasks_with_planner",
             "generate_response": "generate_response",
             END: END
         }
@@ -379,9 +355,6 @@ def create_agent() -> Graph:
             END: END
         }
     )
-    
-    # Set entry point
-    workflow.set_entry_point("check_trigger")
     
     return workflow.compile()
 
