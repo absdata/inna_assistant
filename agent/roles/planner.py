@@ -2,6 +2,9 @@ from typing import List, Dict, Any
 from .base import BaseAgent, AgentMemory
 from services.azure_openai import openai_service
 from services.database import db_service
+import logging
+
+logger = logging.getLogger(__name__)
 
 class PlannerAgent(BaseAgent):
     def __init__(self):
@@ -85,21 +88,40 @@ class PlannerAgent(BaseAgent):
             
             # Execute task operations
             for operation in task_operations.split("\n"):
+                operation = operation.strip()
+                if not operation:
+                    continue
+                    
                 if operation.startswith("CREATE:"):
                     task_details = operation[8:].strip()
-                    await db_service.create_task(
-                        chat_id=memory.chat_id,
-                        title=task_details
-                    )
+                    if task_details:
+                        await db_service.create_task(
+                            chat_id=memory.chat_id,
+                            title=task_details
+                        )
                 elif operation.startswith("UPDATE:"):
                     task_details = operation[8:].strip()
-                    # Parse task ID and new status
-                    # This is a simplified version - you'd want more robust parsing
-                    task_id, new_status = task_details.split(" -> ")
-                    await db_service.update_task(
-                        task_id=int(task_id),
-                        status=new_status
-                    )
+                    try:
+                        # More robust parsing with error handling
+                        if " -> " not in task_details:
+                            logger.warning(f"Invalid task update format: {task_details}")
+                            continue
+                            
+                        task_id_str, new_status = task_details.split(" -> ", 1)
+                        task_id = int(task_id_str.strip())
+                        new_status = new_status.strip()
+                        
+                        if task_id > 0 and new_status:
+                            await db_service.update_task(
+                                task_id=task_id,
+                                status=new_status
+                            )
+                        else:
+                            logger.warning(f"Invalid task ID or status: ID={task_id}, status={new_status}")
+                    except ValueError as e:
+                        logger.error(f"Error parsing task update '{task_details}': {str(e)}")
+                    except Exception as e:
+                        logger.error(f"Error updating task: {str(e)}")
         
         except Exception as e:
             print(f"Error executing task operations: {e}")

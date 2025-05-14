@@ -20,6 +20,7 @@ class ContextAgent(BaseAgent):
             
             # Generate embedding for the query
             embedding = await openai_service.get_embedding(query_text)
+            logger.info("Generated embedding for query")
             
             # Search parameters for comprehensive context
             search_params = {
@@ -30,7 +31,10 @@ class ContextAgent(BaseAgent):
                 "limit": 20  # Higher limit to get more context
             }
             
+            logger.info("Starting context retrieval process")
+            
             # Get relevant memories from memory store
+            logger.info("Retrieving relevant memories from memory store")
             relevant_memories = await self.memory_store.get_relevant_memories(
                 chat_id=memory.chat_id,
                 query=query_text,
@@ -39,6 +43,7 @@ class ContextAgent(BaseAgent):
             )
             
             # Perform regular search for messages and documents
+            logger.info("Searching for relevant messages and documents")
             messages = await db_service.search_messages_with_content(**search_params)
             logger.info(f"Found {len(messages)} relevant messages and {len(relevant_memories)} memories")
             
@@ -49,13 +54,14 @@ class ContextAgent(BaseAgent):
             agent_insights = []
             
             # Process messages from database
+            logger.info("Processing and organizing search results")
             for msg in messages:
                 relevance = msg.get("final_similarity", 0)
                 
                 if msg.get("file_content") or msg.get("sections"):
                     chunks = msg.get("matching_chunks", [])
                     sections = msg.get("sections", {})
-                    logger.debug(f"Processing document with {len(sections)} sections and {len(chunks)} matching chunks")
+                    logger.info(f"Processing document with {len(sections)} sections and {len(chunks)} matching chunks")
                     
                     if sections:
                         relevant_sections = []
@@ -65,10 +71,10 @@ class ContextAgent(BaseAgent):
                             key=lambda x: x[1]["similarity"],
                             reverse=True
                         )
-                        logger.debug(f"Sorted sections by similarity: {[(title, data['similarity']) for title, data in sorted_sections]}")
+                        logger.info(f"Sorted sections by similarity: {[(title, data['similarity']) for title, data in sorted_sections]}")
                         
                         for section_title, section_data in sorted_sections[:3]:  # Top 3 most relevant sections
-                            logger.debug(f"Adding section '{section_title}' with similarity {section_data['similarity']:.4f}")
+                            logger.info(f"Adding section '{section_title}' with similarity {section_data['similarity']:.4f}")
                             relevant_sections.append({
                                 "content": section_data["content"],
                                 "similarity": section_data["similarity"],
@@ -90,6 +96,7 @@ class ContextAgent(BaseAgent):
                     })
             
             # Process memories from memory store
+            logger.info("Processing memories from memory store")
             for mem in relevant_memories:
                 if mem.memory_type == MemoryType.SUMMARY:
                     summaries.append({
@@ -110,6 +117,9 @@ class ContextAgent(BaseAgent):
             chat_messages.sort(key=lambda x: x["relevance"], reverse=True)
             summaries.sort(key=lambda x: x["relevance"], reverse=True)
             agent_insights.sort(key=lambda x: x["relevance"], reverse=True)
+            
+            logger.info(f"Organized content: {len(doc_content)} documents, {len(chat_messages)} messages, "
+                       f"{len(summaries)} summaries, {len(agent_insights)} insights")
             
             # Create context list
             context_list = []
@@ -152,6 +162,8 @@ class ContextAgent(BaseAgent):
                     "created_at": msg["created_at"]
                 })
             
+            logger.info(f"Created context list with {len(context_list)} items")
+            
             # Format the context for display
             formatted_sections = []
             
@@ -165,6 +177,7 @@ class ContextAgent(BaseAgent):
                     for doc in doc_content[:5]
                 ])
                 formatted_sections.append("### Document Content ###\n" + doc_text)
+                logger.info(f"Added {len(doc_content[:5])} documents to formatted context")
             
             if summaries:
                 summary_text = "\n\n".join([
@@ -172,6 +185,7 @@ class ContextAgent(BaseAgent):
                     for summary in summaries[:3]
                 ])
                 formatted_sections.append("### Recent Summaries ###\n" + summary_text)
+                logger.info(f"Added {len(summaries[:3])} summaries to formatted context")
             
             if agent_insights:
                 insight_text = "\n\n".join([
@@ -179,6 +193,7 @@ class ContextAgent(BaseAgent):
                     for insight in agent_insights[:3]
                 ])
                 formatted_sections.append("### Agent Insights ###\n" + insight_text)
+                logger.info(f"Added {len(agent_insights[:3])} insights to formatted context")
             
             if chat_messages:
                 msg_text = "\n\n".join([
@@ -186,8 +201,10 @@ class ContextAgent(BaseAgent):
                     for msg in chat_messages[:5]
                 ])
                 formatted_sections.append("### Chat Messages ###\n" + msg_text)
+                logger.info(f"Added {len(chat_messages[:5])} messages to formatted context")
             
             formatted_context = "\n\n".join(formatted_sections)
+            logger.info("Completed context formatting")
             
             # Save the context to memory
             await self.save_memory(
@@ -197,6 +214,7 @@ class ContextAgent(BaseAgent):
             
             # Return both the formatted string and the structured context list
             memory.context = context_list
+            logger.info("Context processing completed successfully")
             return formatted_context
             
         except Exception as e:
