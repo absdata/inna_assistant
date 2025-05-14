@@ -601,7 +601,7 @@ class DatabaseService:
             }
             
             # Get initial matches from vector search
-            matches = await self.client.rpc(
+            matches = self.client.rpc(
                 "match_messages",
                 rpc_params
             ).execute()
@@ -624,17 +624,29 @@ class DatabaseService:
             # Process each message
             results = []
             for message_id, similarity in message_similarities.items():
-                logger.info(f"Processing message {message_id} with {matches.data.count(lambda m: m['message_id'] == message_id)} matching chunks")
+                logger.info(f"Processing message {message_id}")
                 
                 # Get message details
-                message = await self.get_message(message_id)
+                message_result = self.client.table("inna_messages")\
+                    .select("*")\
+                    .eq("id", message_id)\
+                    .single()\
+                    .execute()
+                
+                message = message_result.data if message_result.data else None
                 if not message:
                     continue
                 
                 # Always retrieve file chunks for current message
                 if message_id == current_message_id:
                     logger.info(f"Retrieving file chunks for current message {message_id}")
-                    chunks = await self.get_file_chunks(message_id)
+                    chunks_result = self.client.table("inna_file_chunks")\
+                        .select("*")\
+                        .eq("message_id", message_id)\
+                        .order("chunk_index")\
+                        .execute()
+                    
+                    chunks = chunks_result.data if chunks_result.data else None
                     if chunks:
                         message["file_chunks"] = chunks
                         message["sections"] = self._process_chunks_into_sections(chunks)
@@ -643,7 +655,13 @@ class DatabaseService:
                 # For other messages, only retrieve if they match well
                 elif similarity >= threshold:
                     logger.info(f"Retrieving file chunks for message {message_id}")
-                    chunks = await self.get_file_chunks(message_id)
+                    chunks_result = self.client.table("inna_file_chunks")\
+                        .select("*")\
+                        .eq("message_id", message_id)\
+                        .order("chunk_index")\
+                        .execute()
+                    
+                    chunks = chunks_result.data if chunks_result.data else None
                     if chunks:
                         message["file_chunks"] = chunks
                         message["sections"] = self._process_chunks_into_sections(chunks)
