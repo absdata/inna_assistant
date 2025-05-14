@@ -114,7 +114,7 @@ class MemoryStore:
                     id=mem["id"],
                     chat_id=chat_id,
                     content=mem["context"],
-                    memory_type=MemoryType(mem["agent_role"]),
+                    memory_type=MemoryType(mem["memory_role"]),
                     embedding=mem["embedding"],
                     metadata=mem.get("metadata", {}),
                     relevance_score=mem["relevance_score"],

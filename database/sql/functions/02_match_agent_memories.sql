@@ -11,6 +11,7 @@ returns table (
     id bigint,
     chat_id bigint,
     context text,
+    memory_role text,
     metadata jsonb,
     similarity float
 )
@@ -22,6 +23,7 @@ begin
         inna_agent_memory.id,
         inna_agent_memory.chat_id,
         inna_agent_memory.context,
+        inna_agent_memory.agent_role as memory_role,
         inna_agent_memory.metadata,
         1 - (inna_agent_memory.embedding <=> query_embedding) as similarity
     from inna_agent_memory
