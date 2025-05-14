@@ -101,10 +101,12 @@ async def retrieve_context(state: Union[Dict[str, Any], AgentState]) -> Dict[str
         )
         
         # Get context from context agent
+        # This will update memory.context with the structured list
         formatted_context = await context_agent.process(memory)
         
-        # Update state with context
-        state_obj.formatted_context = formatted_context
+        # Update state with both formats
+        state_obj.context = memory.context  # Structured list
+        state_obj.formatted_context = formatted_context  # Formatted string
         return state_obj.to_dict()
     except Exception as e:
         logger.error(f"Error in retrieve_context: {str(e)}", exc_info=True)
@@ -122,7 +124,7 @@ async def create_plan(state: Union[Dict[str, Any], AgentState]) -> Dict[str, Any
         # Create memory object for planner agent
         memory = AgentMemory(
             messages=state_obj.messages,
-            context=state_obj.formatted_context,
+            context=state_obj.context,
             current_message=state_obj.current_message,
             chat_id=state_obj.chat_id,
             role="planner"
@@ -152,7 +154,7 @@ async def analyze_with_critic(state: Union[Dict[str, Any], AgentState]) -> Dict[
         # Create memory object for critic agent
         memory = AgentMemory(
             messages=state_obj.messages,
-            context=state_obj.formatted_context,
+            context=state_obj.context,
             current_message=state_obj.current_message,
             chat_id=state_obj.chat_id,
             plan=state_obj.plan,
@@ -179,7 +181,7 @@ async def update_tasks_with_planner(state: Union[Dict[str, Any], AgentState]) ->
         # Create memory object for planner agent (task update mode)
         memory = AgentMemory(
             messages=state_obj.messages,
-            context=state_obj.formatted_context,
+            context=state_obj.context,
             current_message=state_obj.current_message,
             chat_id=state_obj.chat_id,
             plan=state_obj.plan,
@@ -207,7 +209,7 @@ async def generate_response(state: Union[Dict[str, Any], AgentState]) -> Dict[st
         # Create memory object for responder agent
         memory = AgentMemory(
             messages=state_obj.messages,
-            context=state_obj.formatted_context,
+            context=state_obj.context,
             current_message=state_obj.current_message,
             chat_id=state_obj.chat_id,
             plan=state_obj.plan,
@@ -238,7 +240,7 @@ def get_next_step(state: Union[Dict[str, Any], AgentState]) -> str:
                 return END
             elif state_obj.plan:
                 return "generate_response"
-            elif state_obj.formatted_context:
+            elif state_obj.context:
                 return "create_plan"
             else:
                 return "retrieve_context"
@@ -252,7 +254,7 @@ def get_next_step(state: Union[Dict[str, Any], AgentState]) -> str:
             return "update_tasks_with_planner"
         elif state_obj.plan:
             return "analyze_with_critic"
-        elif state_obj.formatted_context:
+        elif state_obj.context:
             return "create_plan"
         else:
             return "retrieve_context"

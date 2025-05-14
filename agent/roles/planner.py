@@ -16,9 +16,27 @@ class PlannerAgent(BaseAgent):
         )
         
         # Format context for the LLM
-        context_text = "\n".join([
-            f"- {mem['context']}" for mem in context
-        ])
+        context_sections = []
+        for item in memory.context:
+            if item["type"] == "document":
+                doc_text = f"Document: {item['file_name']} (Relevance: {item['relevance']:.2f}):\n"
+                for section in item["content"]:
+                    doc_text += f"Section (Similarity: {section['similarity']:.2f}):\n{section['content']}\n"
+                context_sections.append(doc_text)
+            elif item["type"] == "summary":
+                context_sections.append(
+                    f"Summary (Relevance: {item['relevance']:.2f}):\n{item['content']}"
+                )
+            elif item["type"] == "agent_insight":
+                context_sections.append(
+                    f"Agent {item['insight_type'].title()} (Relevance: {item['relevance']:.2f}):\n{item['content']}"
+                )
+            elif item["type"] == "chat":
+                context_sections.append(
+                    f"Message (Relevance: {item['relevance']:.2f}):\n{item['content']}"
+                )
+        
+        context_text = "\n\n".join(context_sections)
         
         # Get existing tasks
         tasks = await db_service.get_tasks(memory.chat_id)
