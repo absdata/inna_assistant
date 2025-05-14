@@ -2,7 +2,7 @@
 import asyncio
 import signal
 import uvicorn
-from services.telegram_bot import bot_service
+from services.telegram_bot import telegram_bot
 from cron.scheduler import scheduler
 from web.app import app
 import logging
@@ -53,7 +53,7 @@ async def lifespan(app):
         
         # Start the Telegram bot in the background
         logger.info("Starting Telegram bot service...")
-        bot_task = asyncio.create_task(bot_service.start())
+        bot_task = asyncio.create_task(telegram_bot.start())
         logger.info("Telegram bot service started in background")
         
         logger.info("All services started successfully")
@@ -69,7 +69,7 @@ async def lifespan(app):
         
         # Stop the Telegram bot
         logger.info("Stopping Telegram bot service...")
-        await bot_service.stop()
+        await telegram_bot.stop()
         
         # Wait for bot task to complete with timeout
         if not bot_task.done():
@@ -136,7 +136,7 @@ async def shutdown(server):
     # Stop the Telegram bot
     logger.info("Stopping Telegram bot service...")
     try:
-        await bot_service.stop()
+        await telegram_bot.stop()
         logger.info("Telegram bot service stopped successfully")
     except Exception as e:
         logger.error(f"Error stopping Telegram bot: {str(e)}", exc_info=True)
