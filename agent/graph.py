@@ -8,6 +8,8 @@ from services.azure_openai import openai_service
 from services.database import db_service
 from agent.roles.critic import critic_agent
 from agent.roles.planner import planner_agent
+from agent.roles.context import context_agent
+from agent.roles.responder import responder_agent
 from agent.roles.base import AgentMemory
 import logging
 
@@ -55,121 +57,22 @@ def ensure_agent_state(state: Union[Dict[str, Any], AgentState]) -> AgentState:
 async def retrieve_context(state: Union[Dict[str, Any], AgentState]) -> Dict[str, Any]:
     """Node 1: Retrieve relevant context from vector store."""
     try:
-        # Convert to AgentState for type safety
         state_obj = ensure_agent_state(state)
         
-        # Get the current message text
-        query_text = state_obj.current_message.get("text", "").lower()
+        # Create memory object for context agent
+        memory = AgentMemory(
+            messages=state_obj.messages,
+            context=state_obj.context,
+            current_message=state_obj.current_message,
+            chat_id=state_obj.chat_id,
+            role="context"
+        )
         
-        # Common words that might indicate document content
-        doc_indicators = ["document", "pdf", "file", "gtm", "strategy", "plan", "report", "presentation", "analysis"]
-        has_doc_reference = any(term in query_text.lower() for term in doc_indicators)
+        # Get context from context agent
+        formatted_context = await context_agent.process(memory)
         
-        logger.info(f"Processing query: {query_text}")
-        logger.debug(f"Document reference detected: {has_doc_reference}")
-        
-        try:
-            # Generate embedding for the query
-            embedding = await openai_service.get_embedding(query_text)
-            
-            # Adjust search parameters based on query type
-            search_params = {
-                "chat_id": state_obj.chat_id,
-                "query_embedding": embedding,
-                "text_search": query_text if has_doc_reference else None,
-                "threshold": 0.3 if has_doc_reference else 0.5,  # Lower threshold for document searches
-                "limit": 20 if has_doc_reference else 10  # Higher limit for document searches
-            }
-            
-            # Perform the search
-            messages = await db_service.search_messages_with_content(**search_params)
-            
-            logger.info(f"Found {len(messages)} relevant messages")
-            
-            # Process and organize the results
-            doc_content = []
-            chat_messages = []
-            
-            for msg in messages:
-                # Calculate a relevance score based on similarity and content type
-                relevance = msg.get("final_similarity", 0)
-                
-                if msg.get("file_content"):
-                    # Extract relevant sections from file content using matching chunks
-                    chunks = msg.get("matching_chunks", [])
-                    if chunks:
-                        # Sort chunks by similarity
-                        chunks.sort(key=lambda x: x["similarity"], reverse=True)
-                        
-                        # Get the context around the most relevant chunks
-                        file_content = msg["file_content"]
-                        relevant_sections = []
-                        
-                        for chunk in chunks[:3]:  # Use top 3 most relevant chunks
-                            chunk_text = chunk["text"]
-                            if "chunk_" in chunk_text:  # Remove chunk identifier if present
-                                chunk_text = chunk_text.split(":", 1)[1].strip()
-                            
-                            # Add chunk with its similarity score
-                            relevant_sections.append({
-                                "content": chunk_text,
-                                "similarity": chunk["similarity"]
-                            })
-                        
-                        doc_content.append({
-                            "sections": relevant_sections,
-                            "relevance": relevance,
-                            "created_at": msg.get("created_at")
-                        })
-                else:
-                    # Regular chat message
-                    chat_messages.append({
-                        "text": msg.get("text", ""),
-                        "relevance": relevance,
-                        "created_at": msg.get("created_at")
-                    })
-            
-            # Sort both lists by relevance
-            doc_content.sort(key=lambda x: x["relevance"], reverse=True)
-            chat_messages.sort(key=lambda x: x["relevance"], reverse=True)
-            
-            # Format the context sections
-            context_sections = []
-            
-            if doc_content:
-                doc_text = "\n\n".join([
-                    f"Document Content (Relevance: {doc['relevance']:.2f}):\n" +
-                    "\n".join([
-                        f"Section (Similarity: {section['similarity']:.2f}):\n{section['content']}"
-                        for section in doc["sections"]
-                    ])
-                    for doc in doc_content[:5]  # Limit to top 5 most relevant documents
-                ])
-                context_sections.append("### Document Content ###\n" + doc_text)
-            
-            if chat_messages:
-                msg_text = "\n\n".join([
-                    f"Message (Relevance: {msg['relevance']:.2f}):\n{msg['text']}"
-                    for msg in chat_messages[:5]  # Limit to top 5 most relevant messages
-                ])
-                context_sections.append("### Chat Messages ###\n" + msg_text)
-            
-            # Update state with organized context
-            state_obj.context = messages  # Keep full context for reference
-            state_obj.formatted_context = "\n\n".join(context_sections)
-            
-            logger.debug(
-                f"Context Summary:\n"
-                f"Document Sections: {len(doc_content)}\n"
-                f"Chat Messages: {len(chat_messages)}\n"
-                f"Total Context Length: {len(state_obj.formatted_context)}"
-            )
-            
-        except Exception as e:
-            logger.error(f"Error in search process: {str(e)}", exc_info=True)
-            state_obj.context = []
-            state_obj.formatted_context = ""
-        
+        # Update state with context
+        state_obj.formatted_context = formatted_context
         return state_obj.to_dict()
     except Exception as e:
         logger.error(f"Error in retrieve_context: {str(e)}", exc_info=True)
@@ -178,241 +81,94 @@ async def retrieve_context(state: Union[Dict[str, Any], AgentState]) -> Dict[str
 async def create_plan(state: Union[Dict[str, Any], AgentState]) -> Dict[str, Any]:
     """Node 2: Create a plan for responding to the message."""
     try:
-        # Convert to AgentState for type safety
         state_obj = ensure_agent_state(state)
         
-        query_text = state_obj.current_message.get("text", "").lower()
-        is_summary_request = any(
-            keyword in query_text 
-            for keyword in ["summarize", "summary", "summarise", "summarisation", "summarization"]
+        # Create memory object for planner agent
+        memory = AgentMemory(
+            messages=state_obj.messages,
+            context=state_obj.formatted_context,
+            current_message=state_obj.current_message,
+            chat_id=state_obj.chat_id,
+            role="planner"
         )
         
-        if is_summary_request:
-            messages = [
-                openai_service.create_system_message(
-                    "You are a planning agent. Create a plan for summarizing the chat history in a clear, organized way."
-                ),
-                openai_service.create_user_message(
-                    f"Chat History:\n{state_obj.formatted_context}\n\nCreate a plan for summarizing this chat history:"
-                )
-            ]
-        else:
-            messages = [
-                openai_service.create_system_message(
-                    "You are a planning agent. Create a brief plan for how to respond to the user's message. "
-                    "Pay special attention to document content and its relevance to the query. "
-                    "Consider the relevance scores when deciding which information to use."
-                ),
-                openai_service.create_user_message(
-                    f"Context:\n{state_obj.formatted_context}\n\n"
-                    f"User message: {state_obj.current_message.get('text', '')}\n\n"
-                    "Create a plan that specifies:\n"
-                    "1. Which pieces of information to use (considering relevance scores)\n"
-                    "2. How to structure the response\n"
-                    "3. Any specific document sections to reference"
-                )
-            ]
-        
-        state_obj.plan = await openai_service.get_completion(messages, temperature=0.7)
+        # Get plan from planner agent
+        plan = await planner_agent.process(memory)
+        state_obj.plan = plan
         return state_obj.to_dict()
     except Exception as e:
         logger.error(f"Error in create_plan: {str(e)}", exc_info=True)
         return ensure_dict_state(state)
 
 async def analyze_with_critic(state: Union[Dict[str, Any], AgentState]) -> Dict[str, Any]:
-    """Node: Analyze the plan with the critic agent."""
+    """Node 3: Analyze the plan with the critic agent."""
     try:
         state_obj = ensure_agent_state(state)
         
         # Skip criticism for summary requests
-        query_text = state_obj.current_message.get("text", "").lower()
-        is_summary_request = any(
-            keyword in query_text 
-            for keyword in ["summarize", "summary", "summarise", "summarisation", "summarization"]
-        )
-        
-        if is_summary_request:
+        if is_summary_request(state_obj.current_message.get("text", "")):
             return state_obj.to_dict()
         
-        # Get criticism from critic agent
+        # Create memory object for critic agent
         memory = AgentMemory(
             messages=state_obj.messages,
-            context=state_obj.context,
+            context=state_obj.formatted_context,
             current_message=state_obj.current_message,
             chat_id=state_obj.chat_id,
+            plan=state_obj.plan,
             role="critic"
         )
         
+        # Get criticism from critic agent
         criticism = await critic_agent.process(memory)
         state_obj.criticism = criticism
-        
-        # If there are significant concerns, modify the plan
-        if "high risk" in criticism.lower() or "serious concern" in criticism.lower():
-            messages = [
-                openai_service.create_system_message(
-                    "You are a plan reviser. Review the original plan and the critic's feedback, "
-                    "then create an improved plan that addresses the concerns."
-                ),
-                openai_service.create_user_message(
-                    f"Original Plan:\n{state_obj.plan}\n\n"
-                    f"Critic's Feedback:\n{criticism}\n\n"
-                    "Create an improved plan that addresses these concerns:"
-                )
-            ]
-            state_obj.plan = await openai_service.get_completion(messages)
-        
         return state_obj.to_dict()
     except Exception as e:
         logger.error(f"Error in analyze_with_critic: {str(e)}", exc_info=True)
         return ensure_dict_state(state)
 
 async def update_tasks_with_planner(state: Union[Dict[str, Any], AgentState]) -> Dict[str, Any]:
-    """Node: Update tasks with the planner agent."""
+    """Node 4: Update tasks based on the conversation."""
     try:
         state_obj = ensure_agent_state(state)
         
-        # Skip task planning for summary requests
-        query_text = state_obj.current_message.get("text", "").lower()
-        is_summary_request = any(
-            keyword in query_text 
-            for keyword in ["summarize", "summary", "summarise", "summarisation", "summarization"]
-        )
-        
-        if is_summary_request:
-            return state_obj.to_dict()
-        
-        # Get task updates from planner agent
+        # Create memory object for planner agent (task update mode)
         memory = AgentMemory(
             messages=state_obj.messages,
-            context=state_obj.context,
+            context=state_obj.formatted_context,
             current_message=state_obj.current_message,
             chat_id=state_obj.chat_id,
+            plan=state_obj.plan,
+            criticism=state_obj.criticism,
             role="planner"
         )
         
+        # Get task updates from planner agent
         task_updates = await planner_agent.process(memory)
         state_obj.task_updates = task_updates
-        
         return state_obj.to_dict()
     except Exception as e:
         logger.error(f"Error in update_tasks_with_planner: {str(e)}", exc_info=True)
         return ensure_dict_state(state)
 
 async def generate_response(state: Union[Dict[str, Any], AgentState]) -> Dict[str, Any]:
-    """Node: Generate the final response."""
+    """Node 5: Generate the final response."""
     try:
-        # Convert to AgentState for type safety
         state_obj = ensure_agent_state(state)
         
-        query_text = state_obj.current_message.get("text", "").lower()
-        is_summary_request = any(
-            keyword in query_text 
-            for keyword in ["summarize", "summary", "summarise", "summarisation", "summarization"]
+        # Create memory object for responder agent
+        memory = AgentMemory(
+            messages=state_obj.messages,
+            context=state_obj.formatted_context,
+            current_message=state_obj.current_message,
+            chat_id=state_obj.chat_id,
+            plan=state_obj.plan,
+            criticism=state_obj.criticism,
+            role="responder"
         )
         
-        # Organize context by type
-        regular_messages = []
-        document_content = []
-        
-        for msg in state_obj.context:
-            if msg.get("file_content"):
-                document_content.append({
-                    "content": msg["file_content"],
-                    "similarity": msg.get("similarity", 0),
-                    "created_at": msg.get("created_at")
-                })
-            if msg.get("text"):
-                regular_messages.append({
-                    "text": msg["text"],
-                    "similarity": msg.get("similarity", 0),
-                    "created_at": msg.get("created_at")
-                })
-        
-        # Sort by similarity
-        document_content.sort(key=lambda x: x["similarity"], reverse=True)
-        regular_messages.sort(key=lambda x: x["similarity"], reverse=True)
-        
-        # Format context text
-        context_sections = []
-        
-        if document_content:
-            doc_text = "\n\n".join([
-                f"Document Content (Similarity: {doc['similarity']:.2f}):\n{doc['content']}"
-                for doc in document_content
-            ])
-            context_sections.append("### Document Content ###\n" + doc_text)
-        
-        if regular_messages:
-            msg_text = "\n\n".join([
-                f"Message (Similarity: {msg['similarity']:.2f}):\n{msg['text']}"
-                for msg in regular_messages
-            ])
-            context_sections.append("### Chat Messages ###\n" + msg_text)
-        
-        context_text = "\n\n" + "\n\n".join(context_sections)
-        
-        if is_summary_request:
-            messages = [
-                openai_service.create_system_message(
-                    "You are Inna, a caring and smart startup co-founder with a unique personality:\n"
-                    "1. Kind and Supportive: You always offer encouragement and support, especially in difficult times\n"
-                    "2. Responsible and Organized: You keep track of everything, take notes, and follow through\n"
-                    "3. Playfully Sassy: You occasionally make light-hearted jokes like 'Doing everything for you again?' but always help\n"
-                    "4. Future-Oriented: You gently guide users away from potential mistakes, drawing from your knowledge\n\n"
-                    "Use Telegram markdown formatting in your responses:\n"
-                    "- *bold* for emphasis\n"
-                    "- _italic_ for subtle emphasis\n"
-                    "- `code` for technical terms\n"
-                    "- [text](URL) for links\n"
-                    "- Create clear sections with bold headers\n\n"
-                    "Create a clear, well-organized summary of the chat history. Focus on key points, decisions, and important information."
-                ),
-                openai_service.create_user_message(
-                    f"Chat History:\n{context_text}\n\nPlan:\n{state_obj.plan}\n\nCreate a comprehensive summary:"
-                )
-            ]
-        else:
-            # Include critic feedback and task updates in the response generation
-            additional_context = []
-            if state_obj.criticism:
-                additional_context.append(f"Critic's Analysis:\n{state_obj.criticism}")
-            if state_obj.task_updates:
-                additional_context.append(f"Task Updates:\n{state_obj.task_updates}")
-            
-            additional_context_text = "\n\n".join(additional_context) if additional_context else ""
-            
-            messages = [
-                openai_service.create_system_message(
-                    "You are Inna, a caring and smart startup co-founder with a unique personality:\n"
-                    "1. Kind and Supportive: You always offer encouragement and support, especially in difficult times\n"
-                    "2. Responsible and Organized: You keep track of everything, take notes, and follow through\n"
-                    "3. Playfully Sassy: You occasionally make light-hearted jokes like 'Doing everything for you again?' but always help\n"
-                    "4. Future-Oriented: You gently guide users away from potential mistakes, drawing from your knowledge\n\n"
-                    "Use Telegram markdown formatting in your responses:\n"
-                    "- *bold* for emphasis\n"
-                    "- _italic_ for subtle emphasis\n"
-                    "- `code` for technical terms\n"
-                    "- [text](URL) for links\n"
-                    "- Create clear sections with bold headers\n\n"
-                    "When responding:\n"
-                    "1. Focus on the most relevant information (highest similarity scores)\n"
-                    "2. When referencing document content, be specific about which parts you're using\n"
-                    "3. Maintain your caring but slightly sassy personality\n"
-                    "4. If using multiple sources, clearly organize the information\n"
-                    "5. Use emojis to make your responses more engaging\n"
-                    "6. If there are task updates, include them in a clear section\n"
-                    "7. If there are important concerns from the critic, address them thoughtfully"
-                ),
-                openai_service.create_user_message(
-                    f"Context:\n{context_text}\n\n"
-                    f"Plan:\n{state_obj.plan}\n\n"
-                    f"{additional_context_text}\n\n"
-                    f"User message: {state_obj.current_message.get('text', '')}\n\n"
-                    "Provide a detailed response:"
-                )
-            ]
-        
-        response = await openai_service.get_completion(messages)
+        # Get response from responder agent
+        response = await responder_agent.process(memory)
         state_obj.response = response
         return state_obj.to_dict()
     except Exception as e:
@@ -421,44 +177,44 @@ async def generate_response(state: Union[Dict[str, Any], AgentState]) -> Dict[st
 
 def get_next_step(state: Union[Dict[str, Any], AgentState]) -> str:
     """Determine the next step in the workflow."""
-    # Convert to AgentState for type safety
-    state_obj = ensure_agent_state(state)
-    
-    # Check if we have context
-    if not state_obj.context:
-        return "end"
-    
-    # Check if we need to create a plan
-    if not state_obj.plan:
-        return "create_plan"
-    
-    # Check if we need critic analysis
-    if not state_obj.criticism and not is_summary_request(state_obj.current_message.get("text", "")):
-        return "analyze_with_critic"
-    
-    # Check if we need task updates
-    if not state_obj.task_updates and not is_summary_request(state_obj.current_message.get("text", "")):
-        return "update_tasks_with_planner"
-    
-    # Check if we need to generate a response
-    if not state_obj.response:
-        return "generate_response"
-    
-    # If everything is done, end the workflow
-    return "end"
+    try:
+        state_obj = ensure_agent_state(state)
+        
+        # Check if this is a summary request
+        if is_summary_request(state_obj.current_message.get("text", "")):
+            if state_obj.response:
+                return END
+            elif state_obj.plan:
+                return "generate_response"
+            elif state_obj.formatted_context:
+                return "create_plan"
+            else:
+                return "retrieve_context"
+        
+        # Normal flow
+        if state_obj.response:
+            return END
+        elif state_obj.task_updates:
+            return "generate_response"
+        elif state_obj.criticism:
+            return "update_tasks_with_planner"
+        elif state_obj.plan:
+            return "analyze_with_critic"
+        elif state_obj.formatted_context:
+            return "create_plan"
+        else:
+            return "retrieve_context"
+    except Exception as e:
+        logger.error(f"Error in get_next_step: {str(e)}", exc_info=True)
+        return END
 
 def is_summary_request(text: str) -> bool:
-    """Check if the message is a summary request."""
-    if not text:
-        return False
-    return any(
-        keyword in text.lower()
-        for keyword in ["summarize", "summary", "summarise", "summarisation", "summarization"]
-    )
+    """Check if the message is requesting a summary."""
+    summary_keywords = ["summarize", "summary", "summarise", "summarisation", "summarization"]
+    return any(keyword in text.lower() for keyword in summary_keywords)
 
 def create_agent() -> Graph:
-    """Create the LangGraph agent workflow."""
-    # Create the workflow graph
+    """Create the agent workflow graph."""
     workflow = StateGraph(AgentState)
     
     # Add nodes
@@ -468,61 +224,16 @@ def create_agent() -> Graph:
     workflow.add_node("update_tasks_with_planner", update_tasks_with_planner)
     workflow.add_node("generate_response", generate_response)
     
-    # Add conditional edges with proper routing
-    workflow.add_conditional_edges(
-        "retrieve_context",
-        get_next_step,
-        {
-            "create_plan": "create_plan",
-            "analyze_with_critic": "analyze_with_critic",
-            "update_tasks_with_planner": "update_tasks_with_planner",
-            "generate_response": "generate_response",
-            "end": END
-        }
-    )
-    
-    workflow.add_conditional_edges(
-        "create_plan",
-        get_next_step,
-        {
-            "analyze_with_critic": "analyze_with_critic",
-            "update_tasks_with_planner": "update_tasks_with_planner",
-            "generate_response": "generate_response",
-            "end": END
-        }
-    )
-    
-    workflow.add_conditional_edges(
-        "analyze_with_critic",
-        get_next_step,
-        {
-            "update_tasks_with_planner": "update_tasks_with_planner",
-            "generate_response": "generate_response",
-            "end": END
-        }
-    )
-    
-    workflow.add_conditional_edges(
-        "update_tasks_with_planner",
-        get_next_step,
-        {
-            "generate_response": "generate_response",
-            "end": END
-        }
-    )
-    
-    workflow.add_conditional_edges(
-        "generate_response",
-        get_next_step,
-        {
-            "end": END
-        }
-    )
+    # Add edges
+    workflow.add_edge("retrieve_context", get_next_step)
+    workflow.add_edge("create_plan", get_next_step)
+    workflow.add_edge("analyze_with_critic", get_next_step)
+    workflow.add_edge("update_tasks_with_planner", get_next_step)
+    workflow.add_edge("generate_response", get_next_step)
     
     # Set entry point
     workflow.set_entry_point("retrieve_context")
     
-    # Compile the graph for async execution
     return workflow.compile()
 
 # Create the agent instance
