@@ -365,3 +365,62 @@ def create_agent() -> Graph:
 
 # Create the agent instance
 agent = create_agent()
+
+class AgentGraph:
+    async def ainvoke(self, state: AgentState) -> Dict[str, Any]:
+        """Process the current state through the agent graph."""
+        try:
+            # Always process if there's a document upload
+            has_document = bool(state.current_message.get("file_content"))
+            
+            # Get context first
+            context = await context_agent.process(state)
+            state.context = context
+            
+            # Always proceed if there's a document or meaningful query
+            should_process = has_document or bool(state.current_message.get("text", "").strip())
+            
+            if should_process:
+                # Get critic's feedback
+                criticism = await critic_agent.process(state)
+                state.criticism = criticism
+                
+                # Get planner's input
+                plan = await planner_agent.process(state)
+                state.plan = plan
+                
+                # Generate response
+                response = await responder_agent.process(state)
+                
+                return {
+                    "should_process": True,
+                    "response": response,
+                    "context": context,
+                    "criticism": criticism,
+                    "plan": plan
+                }
+            
+            return {
+                "should_process": False,
+                "response": None,
+                "context": context,
+                "criticism": None,
+                "plan": None
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in agent graph: {str(e)}", exc_info=True)
+            return {
+                "should_process": False,
+                "response": "I encountered an error while processing. Please try again.",
+                "context": None,
+                "criticism": None,
+                "plan": None
+            }
+
+def create_agent() -> AgentGraph:
+    """Create and return an instance of the agent graph."""
+    return AgentGraph()
+
+# Create the agent instance
+agent = create_agent()

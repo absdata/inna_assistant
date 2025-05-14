@@ -191,28 +191,27 @@ class TelegramBotService:
                     "message_id": message_id,
                     "user_id": user_id,
                     "username": username,
-                    "text": text,
+                    "text": text or "Please analyze this document",  # Default text for document uploads
                     "file_url": file_url,
                     "file_content": file_content
                 },
                 chat_id=chat_id
             )
             
-            # Process message with agent
+            # Always process with agent for both text messages and document uploads
             result = await agent.ainvoke(initial_state)
             
-            # Only respond if the agent actually processed the message
-            if result and result.get("should_process"):
-                if result.get("response"):
-                    await update.message.reply_text(
-                        result["response"],
-                        parse_mode=ParseMode.HTML
-                    )
-                else:
-                    await update.message.reply_text(
-                        "I processed your message but couldn't generate a response. Please try again.",
-                        parse_mode=ParseMode.HTML
-                    )
+            # Send response if available
+            if result and result.get("response"):
+                await update.message.reply_text(
+                    result["response"],
+                    parse_mode=ParseMode.HTML
+                )
+            elif file_content:  # Fallback for document uploads if no response
+                await update.message.reply_text(
+                    "I've received and processed your document. Let me know if you need any specific information from it.",
+                    parse_mode=ParseMode.HTML
+                )
             
         except Exception as e:
             logger.error(f"Error handling message: {str(e)}", exc_info=True)
