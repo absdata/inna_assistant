@@ -135,20 +135,35 @@ class MemoryStore:
             memory_objects = []
             for mem in memories:
                 try:
+                    # Log the memory data for debugging
+                    logger.debug(f"Processing memory: {mem}")
+                    
+                    # Extract and validate required fields
+                    memory_id = mem.get("id")
+                    if not memory_id:
+                        logger.error(f"Memory missing ID: {mem}")
+                        continue
+                        
+                    memory_role = mem.get("memory_role")
+                    if not memory_role:
+                        logger.error(f"Memory missing role: {mem}")
+                        continue
+                    
+                    # Create memory object with validated data
                     memory = Memory(
-                        id=mem["id"],
+                        id=memory_id,
                         chat_id=chat_id,
                         content=mem["context"],
-                        memory_type=MemoryType.from_role(mem["memory_role"]),
+                        memory_type=MemoryType.from_role(memory_role),
                         embedding=mem["embedding"],
                         metadata=mem.get("metadata", {}),
-                        relevance_score=mem["relevance_score"],
-                        created_at=mem["created_at"],
+                        relevance_score=mem.get("relevance_score", 1.0),
+                        created_at=mem.get("created_at", datetime.utcnow()),
                         similarity=mem.get("similarity", 0.0)
                     )
                     memory_objects.append(memory)
                 except Exception as e:
-                    logger.error(f"Error creating memory object: {str(e)}")
+                    logger.error(f"Error creating memory object: {str(e)}, Memory data: {mem}", exc_info=True)
                     continue
             
             logger.info(f"Retrieved {len(memory_objects)} relevant memories for chat {chat_id}")
